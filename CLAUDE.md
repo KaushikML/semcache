@@ -59,6 +59,8 @@ Source of truth for design: `docs/design.md`. Decisions: `docs/adr/`.
 9. Packaging — Docker/compose, `docs/deploy.md`, README.
 
 ## Status
-- **Phase 0 (design): docs written, awaiting review.** Decisions so far: proxy-issued tenant keys;
-  context key hashes last K=2 prior messages (configurable, -1 = all); vcpkg + prebuilt ORT;
-  own WordPiece tokenizer.
+- Phase 0 (design): done. Decisions: proxy-issued tenant keys; context key hashes last K=2 prior
+  messages (configurable, -1 = all); vcpkg + prebuilt ORT; own WordPiece tokenizer.
+- **Phase 1 (walking skeleton): implemented, awaiting review.** Passthrough proxy (every request
+  `BYPASS`), mock upstream, `/healthz` `/readyz` `/metrics`. 49 tests green on debug/asan/tsan.
+  Deferred: `/stats`, `/stats/stream` (need cache data; Phase 3/8), `/readyz` embedder check (Phase 2).
