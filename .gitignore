@@ -7,3 +7,8 @@
 compile_commands.json
 __pycache__/
 *.pyc
+PROMPT.md
+build/
+.venv/
+data/
+*.onnx
