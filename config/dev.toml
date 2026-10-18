@@ -1,0 +1,18 @@
+# Local development against the mock upstream:
+#   ./build/debug/semcache-mock --port 9090 &
+#   SEMCACHE_KEY_DEV=sk-sc-dev ./build/debug/semcache --config config/dev.toml
+mode = "demo"
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[upstream]
+base_url = "http://127.0.0.1:9090"
+
+[logging]
+level = "info"
+
+[[tenants]]
+id = "dev"
+key_env = "SEMCACHE_KEY_DEV"

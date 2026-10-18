@@ -1,0 +1,39 @@
+# semcache configuration. Every key can be overridden by an env var:
+#   SEMCACHE_<SECTION>__<KEY>   e.g. SEMCACHE_SERVER__PORT=9000, SEMCACHE_MODE=demo
+# Secrets never live in this file:
+#   SEMCACHE_UPSTREAM_API_KEY   key semcache uses to call upstream
+#   tenants[].key_env           names the env var holding each tenant's client key
+# Unknown keys are rejected at startup.
+
+mode = "live"                      # "live" | "demo"
+
+[server]
+host = "0.0.0.0"
+port = 8080
+io_threads = 0                     # 0 = one per hardware thread
+max_inflight = 1024                # chat requests in progress; beyond this => 503 + Retry-After
+max_body_bytes = 1048576           # request body cap => 413
+read_timeout_ms = 10000            # full request read; also keep-alive idle timeout
+write_timeout_ms = 30000           # per write to the client
+shutdown_timeout_ms = 5000         # drain budget on SIGTERM
+
+[upstream]
+base_url = "https://api.openai.com"
+verify_tls = true
+connect_timeout_ms = 3000          # DNS + TCP + TLS
+first_byte_timeout_ms = 30000      # until response headers
+idle_timeout_ms = 30000            # max gap between body reads (streams)
+total_timeout_ms = 120000          # whole exchange
+max_response_bytes = 8388608       # non-streaming bodies are buffered up to this
+
+[limits]
+rps = 50                           # per-tenant token bucket
+burst = 100
+
+[logging]
+level = "info"                     # trace|debug|info|warn|error
+log_prompts = false                # prompt/response text is never logged unless true
+
+[[tenants]]
+id = "acme"
+key_env = "SEMCACHE_KEY_ACME"
