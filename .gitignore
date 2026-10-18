@@ -1,0 +1,9 @@
+/build*/
+/external/
+/vcpkg_installed/
+/data/
+/models/
+/.cache/
+compile_commands.json
+__pycache__/
+*.pyc

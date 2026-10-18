@@ -1,0 +1,8 @@
+if(SEMCACHE_SANITIZE)
+  message(STATUS "Sanitizers: ${SEMCACHE_SANITIZE}")
+  add_compile_options(-fsanitize=${SEMCACHE_SANITIZE} -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=${SEMCACHE_SANITIZE})
+  if(SEMCACHE_SANITIZE MATCHES "undefined")
+    add_compile_options(-fno-sanitize-recover=undefined)
+  endif()
+endif()
