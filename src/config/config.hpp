@@ -58,6 +58,24 @@ struct EmbedderConfig {
   // training max_seq_length; it includes [CLS] and [SEP].
   std::size_t max_tokens = 256;
   int intra_op_threads = 1;  // ORT threads per Run; parallelism comes from the embed pool (ADR-005)
+  int threads = 4;                    // embed pool size (design §7.1)
+  std::size_t queue_capacity = 1024;  // pending embed jobs; when full, requests fail open (BYPASS)
+};
+
+using Seconds = std::chrono::seconds;
+
+struct CacheConfig {
+  bool enabled = true;
+  float similarity_threshold = 0.90f;  // placeholder until Phase 7 measures the hit/false-hit curve
+  int history_k = 2;                   // prior non-system messages hashed into the context key; -1 = all
+  double max_temperature = 2.0;        // requests above this are not cached
+  Seconds default_ttl{86'400};
+  std::size_t max_bytes = std::size_t{1} << 30;      // global budget, design §5.1
+  std::size_t max_response_bytes = 64 << 10;         // larger responses are served, not stored (§5.4)
+  std::vector<std::string> store_finish_reasons = {"stop", "tool_calls"};
+  std::size_t restream_chunk_chars = 16;  // re-streamed HIT chunk size (§6.5)
+  Millis restream_delay{0};               // pause between re-streamed chunks
+  Millis sweep_interval{60'000};          // active TTL expiry
 };
 
 struct LimitsConfig {
@@ -74,6 +92,8 @@ struct TenantConfig {
   std::string id;
   std::string key_env;      // name of the env var holding the client key
   Sha256Digest key_sha256;  // only the digest is retained
+  std::optional<std::size_t> max_bytes;  // cache quota; defaults to cache.max_bytes
+  std::optional<Seconds> ttl;            // entry TTL; defaults to cache.default_ttl
 };
 
 struct Config {
@@ -81,6 +101,7 @@ struct Config {
   ServerConfig server;
   UpstreamConfig upstream;
   EmbedderConfig embedder;
+  CacheConfig cache;
   LimitsConfig limits;
   LoggingConfig logging;
   std::vector<TenantConfig> tenants;

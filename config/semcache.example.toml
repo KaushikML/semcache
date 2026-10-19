@@ -31,6 +31,21 @@ model_path = "models/all-MiniLM-L6-v2.onnx"   # scripts/fetch-model.sh; missing 
 vocab_path = "models/vocab.txt"
 max_tokens = 256                   # longer prompts are never embedded (exact match only)
 intra_op_threads = 1               # ORT threads per inference; parallelism comes from the embed pool
+threads = 4                        # embed pool size (embedding + vector search run here, never on I/O threads)
+queue_capacity = 1024              # pending embeds; when full, requests fail open (BYPASS)
+
+[cache]
+enabled = true
+similarity_threshold = 0.90        # cosine; placeholder until Phase 7 measures the hit/false-hit curve
+history_k = 2                      # prior non-system messages in the context key; -1 = all
+max_temperature = 2.0              # requests above this are not cached
+default_ttl_s = 86400
+max_bytes = 1073741824             # global budget for entries (CLOCK eviction beyond it)
+max_response_bytes = 65536         # larger responses are served but not stored
+store_finish_reasons = ["stop", "tool_calls"]   # "length" (truncated) answers are never stored
+restream_chunk_chars = 16          # re-streamed HIT chunk size
+restream_delay_ms = 0              # pause between re-streamed chunks
+sweep_interval_ms = 60000          # active TTL expiry
 
 [limits]
 rps = 50                           # per-tenant token bucket
@@ -43,3 +58,5 @@ log_prompts = false                # prompt/response text is never logged unless
 [[tenants]]
 id = "acme"
 key_env = "SEMCACHE_KEY_ACME"
+# max_bytes = 268435456            # optional cache quota (defaults to cache.max_bytes)
+# ttl_s = 3600                     # optional entry TTL (defaults to cache.default_ttl_s)

@@ -113,10 +113,45 @@ class Reader {
     out = static_cast<Int>(raw);
   }
 
+  void read(std::string_view section, std::string_view key, float& out) {
+    double d = out;
+    read(section, key, d);
+    out = static_cast<float>(d);
+  }
+
   void read(std::string_view section, std::string_view key, Millis& out) {
     std::int64_t ms = out.count();
     read(section, key, ms);
     out = Millis{ms};
+  }
+
+  void read(std::string_view section, std::string_view key, Seconds& out) {
+    std::int64_t s = out.count();
+    read(section, key, s);
+    out = Seconds{s};
+  }
+
+  // Env override is comma-separated: SEMCACHE_CACHE__STORE_FINISH_REASONS=stop,tool_calls
+  void read(std::string_view section, std::string_view key, std::vector<std::string>& out) {
+    if (auto v = from_env(section, key)) {
+      out.clear();
+      std::string_view rest = *v;
+      while (!rest.empty()) {
+        auto comma = rest.find(',');
+        auto item = rest.substr(0, comma);
+        if (!item.empty()) out.emplace_back(item);
+        rest = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
+      }
+    } else if (auto node = lookup(section, key)) {
+      const auto* arr = node->as_array();
+      if (arr == nullptr) throw ConfigError(dotted(section, key) + ": expected an array of strings");
+      out.clear();
+      for (const auto& item : *arr) {
+        auto str = item.value<std::string>();
+        if (!str) throw ConfigError(dotted(section, key) + ": expected an array of strings");
+        out.push_back(*str);
+      }
+    }
   }
 
   // Throws if the file contains keys this binary does not understand (typos would otherwise be
@@ -161,7 +196,9 @@ void read_tenants(const toml::table& root, const EnvLookup& env, Config& cfg) {
     const auto* t = node.as_table();
     if (t == nullptr) throw ConfigError("tenants: each entry must be a table");
     for (const auto& [k, unused] : *t) {
-      if (k != "id" && k != "key_env") throw ConfigError("unknown config key: tenants." + std::string(k.str()));
+      if (k != "id" && k != "key_env" && k != "max_bytes" && k != "ttl_s") {
+        throw ConfigError("unknown config key: tenants." + std::string(k.str()));
+      }
     }
     TenantConfig tc;
     tc.id = (*t)["id"].value_or(std::string{});
@@ -173,6 +210,16 @@ void read_tenants(const toml::table& root, const EnvLookup& env, Config& cfg) {
       throw ConfigError("tenants." + tc.id + ": env var " + tc.key_env + " is not set");
     }
     tc.key_sha256 = sha256(*key);
+    if (const auto* n = t->get("max_bytes")) {
+      auto v = n->value<std::int64_t>();
+      if (!v || *v <= 0) throw ConfigError("tenants." + tc.id + ".max_bytes must be a positive integer");
+      tc.max_bytes = static_cast<std::size_t>(*v);
+    }
+    if (const auto* n = t->get("ttl_s")) {
+      auto v = n->value<std::int64_t>();
+      if (!v || *v <= 0) throw ConfigError("tenants." + tc.id + ".ttl_s must be a positive integer");
+      tc.ttl = Seconds{*v};
+    }
     cfg.tenants.push_back(std::move(tc));
   }
 }
@@ -220,6 +267,20 @@ void finalize_config(Config& cfg) {
   // Model files are checked when the embedder loads; a missing model degrades, it does not fail startup.
   if (cfg.embedder.max_tokens < 3) throw ConfigError("embedder.max_tokens must be >= 3");
   if (cfg.embedder.intra_op_threads < 1) throw ConfigError("embedder.intra_op_threads must be >= 1");
+  if (cfg.embedder.threads < 1) throw ConfigError("embedder.threads must be >= 1");
+  if (cfg.embedder.queue_capacity < 1) throw ConfigError("embedder.queue_capacity must be >= 1");
+
+  const auto& c = cfg.cache;
+  if (!(c.similarity_threshold > 0.0f && c.similarity_threshold <= 1.0f)) {
+    throw ConfigError("cache.similarity_threshold must be in (0, 1]");
+  }
+  if (c.history_k < -1) throw ConfigError("cache.history_k must be >= -1 (-1 = all)");
+  if (c.max_temperature < 0) throw ConfigError("cache.max_temperature must be >= 0");
+  if (c.default_ttl.count() <= 0) throw ConfigError("cache.default_ttl_s must be > 0");
+  if (c.max_bytes == 0 || c.max_response_bytes == 0) throw ConfigError("cache byte limits must be > 0");
+  if (c.restream_chunk_chars == 0) throw ConfigError("cache.restream_chunk_chars must be > 0");
+  if (c.restream_delay.count() < 0) throw ConfigError("cache.restream_delay_ms must be >= 0");
+  if (c.sweep_interval.count() <= 0) throw ConfigError("cache.sweep_interval_ms must be > 0");
 
   if (cfg.limits.rps <= 0 || cfg.limits.burst < 1) {
     throw ConfigError("limits.rps must be > 0 and limits.burst >= 1");
@@ -282,6 +343,21 @@ Config load_config_from_string(std::string_view toml_text, const EnvLookup& env)
   r.read("embedder", "vocab_path", e.vocab_path);
   r.read("embedder", "max_tokens", e.max_tokens);
   r.read("embedder", "intra_op_threads", e.intra_op_threads);
+  r.read("embedder", "threads", e.threads);
+  r.read("embedder", "queue_capacity", e.queue_capacity);
+
+  auto& c = cfg.cache;
+  r.read("cache", "enabled", c.enabled);
+  r.read("cache", "similarity_threshold", c.similarity_threshold);
+  r.read("cache", "history_k", c.history_k);
+  r.read("cache", "max_temperature", c.max_temperature);
+  r.read("cache", "default_ttl_s", c.default_ttl);
+  r.read("cache", "max_bytes", c.max_bytes);
+  r.read("cache", "max_response_bytes", c.max_response_bytes);
+  r.read("cache", "store_finish_reasons", c.store_finish_reasons);
+  r.read("cache", "restream_chunk_chars", c.restream_chunk_chars);
+  r.read("cache", "restream_delay_ms", c.restream_delay);
+  r.read("cache", "sweep_interval_ms", c.sweep_interval);
 
   r.read("limits", "rps", cfg.limits.rps);
   r.read("limits", "burst", cfg.limits.burst);
