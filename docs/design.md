@@ -87,6 +87,13 @@ add ~1/M of that. That is **~150–200 B per entry** (est.), under 5%.
 - all-MiniLM-L6-v2 on one modern x86 core: ~3–8 ms for a 32–128-token input (est.; Phase 2
   measures). With 4 embedding threads at ~5 ms, that is **~800 embeds/s**. Embedding is the
   throughput ceiling, which is why the exact-hash fast path (F4) and coalescing (F8) matter.
+- **Measured (Phase 2, [bench/results/phase2](../bench/results/phase2/README.md)):** on the dev
+  laptop (i7-1165G7, WSL2, apparently power-limited at ~35 GFLOP/s single-core) one embed takes
+  **22 ms at 32 tokens and 82 ms at 128 tokens**, 3–10× the estimate. 4 threads give **87 embeds/s**,
+  not ~800. Batching does not help on CPU. Delta: the estimate assumed a desktop-class core;
+  re-measure on the deployment target before setting `embedder.threads` (Phase 4) or claiming the
+  §3 latency targets. If they still miss, the levers are the exact fast path (F4), coalescing, and
+  int8 (2–3× faster, but cosine 0.97 vs reference; [ADR-011](adr/011-pinned-upstream-onnx-model.md)).
 - Upstream latency (real): 0.3–5 s. Mock: configurable, default 800 ms.
 - In-flight requests at 500 req/s × 50% miss × 1.5 s ≈ **375 concurrent upstream streams**.
   Default `server.max_inflight = 1024`, `upstream.max_connections = 512`.
@@ -392,8 +399,10 @@ only ever removes work.
   `semcache_request_seconds{result}`, `semcache_index_entries`, `semcache_index_bytes`,
   `semcache_partitions`, `semcache_evictions_total{reason}`, `semcache_inflight`,
   `semcache_coalesced_total`, `semcache_tokens_saved_total`, plus the error counters in §8.
-- **`/healthz`:** process liveness (always 200 if the loop runs). **`/readyz`:** 200 when the
-  embedder is loaded and upstream is configured; a JSON body lists degraded components.
+- **`/healthz`:** process liveness (always 200 if the loop runs). **`/readyz`:** JSON
+  `{"status": "ready"|"degraded", "degraded": [...]}`. Degraded (e.g. embedder not loaded) is still
+  **200**: the node serves every request by passthrough, so taking it out of rotation would turn a
+  cache problem into an outage (fail open). Alert on `semcache_embedder_ready == 0` instead.
 - **`/stats`:** JSON snapshot for the dashboard: totals, hit rate, latency summaries, index size,
   in-flight, a histogram, and a recent-requests ring **without prompt text**. **`/stats/stream`:**
   the same as SSE every `stats.stream_interval_ms`.
@@ -565,3 +574,4 @@ ttl_s = 86400
 | [008](adr/008-persistence-snapshot-plus-wal.md) | Snapshot + WAL persistence |
 | [009](adr/009-coalescing-scope.md) | Coalesce on exact flight key; near-duplicate optional |
 | [010](adr/010-embedded-dashboard.md) | Dashboard as static files embedded in the binary |
+| [011](adr/011-pinned-upstream-onnx-model.md) | Published ONNX export pinned by revision + SHA-256 |

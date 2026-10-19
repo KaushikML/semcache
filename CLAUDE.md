@@ -61,6 +61,12 @@ Source of truth for design: `docs/design.md`. Decisions: `docs/adr/`.
 ## Status
 - Phase 0 (design): done. Decisions: proxy-issued tenant keys; context key hashes last K=2 prior
   messages (configurable, -1 = all); vcpkg + prebuilt ORT; own WordPiece tokenizer.
-- **Phase 1 (walking skeleton): implemented, awaiting review.** Passthrough proxy (every request
-  `BYPASS`), mock upstream, `/healthz` `/readyz` `/metrics`. 49 tests green on debug/asan/tsan.
-  Deferred: `/stats`, `/stats/stream` (need cache data; Phase 3/8), `/readyz` embedder check (Phase 2).
+- Phase 1 (walking skeleton): done. Deferred `/stats`, `/stats/stream` to Phase 3/8.
+- **Phase 2 (embedding): implemented, awaiting review.** Own WordPiece (char classes generated from
+  HF: `tools/gen_bert_tables.py`), `OnnxEmbedder` (ORT 1.20.1, model pinned by `scripts/fetch-model.sh`,
+  ADR-011). Gates: exact ids on 3,125 golden strings, exhaustive per-code-point normalizer check,
+  min cosine 0.9999994 vs sentence-transformers. Missing model => `/readyz` 200 "degraded".
+  Bench (`bench/results/phase2`): 22 ms @ 32 tokens on the power-limited dev laptop, far over the
+  10 ms HIT budget; re-measure on target hardware. ORT sanitizer noise suppressed in `tests/sanitizers/`.
+  Embed pool (bounded queue, threads) deferred to Phase 3/4, where the pipeline uses it.
+- Python tooling: `python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt`.
