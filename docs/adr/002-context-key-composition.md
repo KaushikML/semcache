@@ -32,3 +32,17 @@ invalidate old entries cleanly.
   suits brute force.
 - Any parameter we fail to include is a correctness bug, so the canonicalizer has unit tests that
   assert each listed field changes the key.
+
+## Implementation notes (Phase 3, 2026-10-19)
+- **Denylist, not allowlist.** Every top-level request field except `messages`, `stream`,
+  `stream_options`, `user`, `metadata` and `store` goes into the key as canonical JSON. A
+  parameter added to the API later therefore splits partitions instead of silently colliding.
+  `user`, `metadata` and `store` are excluded because they do not change the generated text, and
+  including `user` would give every end user a private cache.
+- **Whole messages, not selected fields.** System/developer messages and the last-K prior messages
+  are hashed as complete canonical JSON objects (`role`, `content`, `name`, `tool_calls`,
+  `tool_call_id`, and anything else present).
+- **Canonical numbers:** integers as integers, floats in shortest round-trip form, so `1` and
+  `1.0` produce the same key. Absent ≠ explicit default (`temperature` absent vs `1.0` differ).
+- Mutation-tested: removing the tenant from the encoding makes both the unit test and the
+  cross-tenant integration test fail (the second tenant receives a HIT).
