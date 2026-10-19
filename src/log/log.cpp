@@ -8,7 +8,9 @@
 namespace semcache::log {
 
 void init(std::string_view level) {
-  auto logger = spdlog::stdout_logger_mt("semcache");
+  // Idempotent, so test harnesses can call it once per environment.
+  auto logger = spdlog::get("semcache");
+  if (!logger) logger = spdlog::stdout_logger_mt("semcache");
   logger->set_pattern("%v");
   logger->set_level(spdlog::level::from_str(std::string(level)));
   logger->flush_on(spdlog::level::warn);

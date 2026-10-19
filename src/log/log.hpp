@@ -12,6 +12,8 @@
 
 namespace semcache::log {
 
+// Must run before any other thread logs: spdlog builds its global registry on first use, and the
+// prebuilt library's lazy initialization is invisible to TSan. Safe to call more than once.
 void init(std::string_view level);
 
 // Pure formatter behind event(); exposed for tests.

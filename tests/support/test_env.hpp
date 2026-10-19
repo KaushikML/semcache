@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "config/config.hpp"
+#include "log/log.hpp"
 #include "fake_embedder.hpp"
 #include "metrics/metrics.hpp"
 #include "mock_upstream.hpp"
@@ -73,6 +74,7 @@ class TestEnv {
   explicit TestEnv(mock::MockConfig mock_cfg = fast_mock(), const std::function<void(Config&)>& tweak = {},
                    WithEmbedder embedder = WithEmbedder::fake, Embedder* custom = nullptr)
       : work_(net::make_work_guard(ioc_)) {
+    log::init("info");  // like main(): before any I/O thread exists (see log.hpp)
     mock_ = std::make_unique<mock::MockUpstream>(ioc_, mock_cfg);
     mock_->start();
     cfg_ = base_config(mock_->port());
