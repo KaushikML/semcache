@@ -16,7 +16,7 @@ TEST(Streaming, EventsArriveIncrementallyAndReassemble) {
   EXPECT_TRUE(r.error.empty()) << r.error;
   EXPECT_EQ(r.header("content-type"), "text/event-stream");
   EXPECT_EQ(r.header("transfer-encoding"), "chunked");
-  EXPECT_EQ(r.header("x-semcache"), "BYPASS");
+  EXPECT_EQ(r.header("x-semcache"), "MISS");
 
   // Headers must be relayed when upstream starts streaming, not after it finishes.
   EXPECT_LT(r.header_ms, r.total_ms / 2) << "header " << r.header_ms << "ms, total " << r.total_ms << "ms";

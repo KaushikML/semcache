@@ -5,6 +5,8 @@
 #include <thread>
 #include <vector>
 
+#include "cache/cache_store.hpp"
+#include "common/worker_pool.hpp"
 #include "config/config.hpp"
 #include "embed/onnx_embedder.hpp"
 #include "log/log.hpp"
@@ -31,6 +33,19 @@ semcache::Task<void> wait_for_drain(const semcache::ProxyServer& server, semcach
     }
     timer.expires_after(kPollInterval);
     co_await timer.async_wait(use_nothrow);
+  }
+}
+
+// Active TTL expiry (lazy expiry on reads handles correctness; this reclaims memory).
+semcache::Task<void> sweep_expired(semcache::CacheStore& store, std::chrono::milliseconds interval,
+                                   const std::atomic<bool>& stopping) {
+  using namespace semcache;
+  net::steady_timer timer(co_await net::this_coro::executor);
+  while (!stopping.load()) {
+    timer.expires_after(interval);
+    auto [ec] = co_await timer.async_wait(use_nothrow);
+    if (ec || stopping.load()) co_return;
+    if (auto n = store.expire(CacheClock::now()); n > 0) log::info("expired cache entries", {{"count", n}});
   }
 }
 
@@ -84,17 +99,28 @@ int main(int argc, char** argv) {
                                   {"load_ms", std::chrono::duration<double, std::milli>(
                                                   std::chrono::steady_clock::now() - t0).count()}});
   } catch (const EmbedderLoadError& e) {
-    log::warn("embedder unavailable; serving passthrough only", {{"error", e.what()}});
+    log::warn("embedder unavailable; exact-match caching only", {{"error", e.what()}});
   }
+
+  CacheStore store(cfg.cache, cfg.tenants, registry);
+  std::unique_ptr<WorkerPool> embed_pool;
+  if (embedder) embed_pool = std::make_unique<WorkerPool>("embed", cfg.embedder.threads, cfg.embedder.queue_capacity);
+  const CacheServices cache{&store, embedder.get(), embed_pool.get()};
 
   std::unique_ptr<ProxyServer> server;
   try {
-    server = std::make_unique<ProxyServer>(ioc, cfg, upstream, embedder.get(), registry);
+    server = std::make_unique<ProxyServer>(ioc, cfg, upstream, cache, registry);
   } catch (const std::exception& e) {
     log::error("failed to start listener", {{"error", e.what()}});
     return 1;
   }
   server->start();
+  std::atomic<bool> stopping{false};
+  // The sweeper runs on its own strand so the shutdown cancel below is delivered on its executor.
+  auto sweep_strand = net::make_strand(ioc);
+  net::cancellation_signal sweep_cancel;
+  net::co_spawn(sweep_strand, sweep_expired(store, cfg.cache.sweep_interval, stopping),
+                net::bind_cancellation_slot(sweep_cancel.slot(), net::detached));
 
   // Graceful shutdown: stop accepting, cancel live sessions, wait for them to drain (bounded by
   // server.shutdown_timeout), then let run() return because no work is left.
@@ -103,6 +129,9 @@ int main(int argc, char** argv) {
     if (ec) return;
     log::info("shutting down", {{"signal", sig}});
     server->stop();
+    stopping = true;
+    net::post(sweep_strand, [&] { sweep_cancel.emit(net::cancellation_type::terminal); });
+    if (embed_pool) embed_pool->stop();  // queued embeds complete as rejected => requests fail open
     net::co_spawn(ioc, wait_for_drain(*server, ioc, cfg.server.shutdown_timeout), net::detached);
   });
 

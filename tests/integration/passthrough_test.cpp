@@ -1,4 +1,4 @@
-// Phase 1: proxy forwards to upstream unchanged; every response is X-Semcache: BYPASS.
+// Proxy forwards requests to upstream unchanged (a first request is a MISS) and relays responses.
 
 #include <gtest/gtest.h>
 
@@ -33,7 +33,7 @@ TEST(Passthrough, MissingEmbedderIsDegradedButStillServes) {
 
   auto chat_r = chat(env.port(), "hi");
   EXPECT_EQ(chat_r.status, 200u);
-  EXPECT_EQ(chat_r.header("x-semcache"), "BYPASS");
+  EXPECT_EQ(chat_r.header("x-semcache"), "MISS") << "exact-match caching still works without the embedder";
 
   auto m = request(env.port(), {.method = http::verb::get, .target = "/metrics", .authorization = ""});
   EXPECT_NE(m.body.find("semcache_embedder_ready 0"), std::string::npos);
@@ -47,7 +47,7 @@ TEST(Passthrough, NonStreamingBodyIsRelayedVerbatim) {
   const auto expected = mock::completion_json(mock::make_completion(nlohmann::json::parse(body), 12));
   EXPECT_EQ(r.body, expected);
   EXPECT_EQ(r.header("content-type"), "application/json");
-  EXPECT_EQ(r.header("x-semcache"), "BYPASS");
+  EXPECT_EQ(r.header("x-semcache"), "MISS");
   EXPECT_FALSE(r.header("x-semcache-latency-ms").empty());
   EXPECT_TRUE(r.header("x-semcache-similarity").empty()) << "no similarity without a lookup";
   EXPECT_EQ(r.header("x-request-id"), mock::make_completion(nlohmann::json::parse(body), 12).id)
@@ -139,7 +139,7 @@ TEST(Passthrough, MetricsEndpointCountsRequests) {
   ASSERT_EQ(request(env.port(), {.body = chat_body("x"), .authorization = ""}).status, 401u);
   auto m = request(env.port(), {.method = http::verb::get, .target = "/metrics", .authorization = ""});
   ASSERT_EQ(m.status, 200u);
-  EXPECT_NE(m.body.find("semcache_requests_total{result=\"BYPASS\"} 1\n"), std::string::npos) << m.body;
+  EXPECT_NE(m.body.find("semcache_requests_total{result=\"MISS\"} 1\n"), std::string::npos) << m.body;
   EXPECT_NE(m.body.find("semcache_auth_failures_total 1\n"), std::string::npos);
   EXPECT_NE(m.body.find("semcache_upstream_responses_total{class=\"2xx\"} 1\n"), std::string::npos);
   EXPECT_NE(m.body.find("semcache_upstream_seconds_count 1\n"), std::string::npos);

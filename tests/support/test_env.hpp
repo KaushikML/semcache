@@ -64,13 +64,14 @@ inline std::uint16_t closed_port() {
   return p;
 }
 
-// Which embedder the proxy gets: a deterministic fake, or none (model failed to load).
-enum class WithEmbedder { fake, none };
+// Which embedder the proxy gets: a deterministic fake, none (model failed to load), or one the
+// test passes in (e.g. the real OnnxEmbedder).
+enum class WithEmbedder { fake, none, custom };
 
 class TestEnv {
  public:
   explicit TestEnv(mock::MockConfig mock_cfg = fast_mock(), const std::function<void(Config&)>& tweak = {},
-                   WithEmbedder embedder = WithEmbedder::fake)
+                   WithEmbedder embedder = WithEmbedder::fake, Embedder* custom = nullptr)
       : work_(net::make_work_guard(ioc_)) {
     mock_ = std::make_unique<mock::MockUpstream>(ioc_, mock_cfg);
     mock_->start();
@@ -78,8 +79,11 @@ class TestEnv {
     if (tweak) tweak(cfg_);
     finalize_config(cfg_);
     upstream_ = std::make_unique<HttpUpstream>(cfg_.upstream, tls_);
-    proxy_ = std::make_unique<ProxyServer>(ioc_, cfg_, *upstream_,
-                                           embedder == WithEmbedder::fake ? &embedder_ : nullptr, registry_);
+    store_ = std::make_unique<CacheStore>(cfg_.cache, cfg_.tenants, registry_);
+    Embedder* e = embedder == WithEmbedder::fake ? &embedder_ : embedder == WithEmbedder::custom ? custom : nullptr;
+    if (e != nullptr) pool_ = std::make_unique<WorkerPool>("test-embed", cfg_.embedder.threads, cfg_.embedder.queue_capacity);
+    proxy_ = std::make_unique<ProxyServer>(ioc_, cfg_, *upstream_, CacheServices{store_.get(), e, pool_.get()},
+                                           registry_);
     proxy_->start();
     for (int i = 0; i < 2; ++i) threads_.emplace_back([this] { ioc_.run(); });
   }
@@ -93,6 +97,8 @@ class TestEnv {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     const bool drained = proxy_->active_sessions() + mock_->active_sessions() == 0;
+    embedder_.set_gate(false);
+    if (pool_) pool_->stop();
     work_.reset();
     if (!drained) ioc_.stop();
     for (auto& t : threads_) t.join();
@@ -105,6 +111,9 @@ class TestEnv {
   [[nodiscard]] std::uint16_t port() const { return proxy_->port(); }
   [[nodiscard]] mock::MockUpstream& mock() { return *mock_; }
   [[nodiscard]] const Config& config() const { return cfg_; }
+  [[nodiscard]] FakeEmbedder& fake_embedder() { return embedder_; }
+  [[nodiscard]] CacheStore& store() { return *store_; }
+  [[nodiscard]] std::string metrics() const { return registry_.render_prometheus(); }
 
  private:
   net::io_context ioc_;
@@ -115,6 +124,8 @@ class TestEnv {
   Config cfg_;
   std::unique_ptr<mock::MockUpstream> mock_;
   std::unique_ptr<HttpUpstream> upstream_;
+  std::unique_ptr<CacheStore> store_;
+  std::unique_ptr<WorkerPool> pool_;
   std::unique_ptr<ProxyServer> proxy_;
   std::vector<std::thread> threads_;
 };
@@ -138,6 +149,7 @@ struct ClientRequest {
   std::string target = "/v1/chat/completions";
   std::string body;
   std::string authorization = "Bearer " + std::string(kTestKey);
+  HeaderList headers;
 };
 
 inline Task<ClientResponse> request_async(std::uint16_t port, ClientRequest r) {
@@ -156,6 +168,7 @@ inline Task<ClientResponse> request_async(std::uint16_t port, ClientRequest r) {
   req.set(http::field::host, "127.0.0.1");
   if (!r.authorization.empty()) req.set(http::field::authorization, r.authorization);
   req.set(http::field::content_type, "application/json");
+  for (const auto& [k, v] : r.headers) req.set(k, v);
   req.body() = r.body;
   req.prepare_payload();
   const auto start = Clock::now();

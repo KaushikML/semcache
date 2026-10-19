@@ -2,6 +2,7 @@
 
 #include <array>
 
+#include "cache/context_key.hpp"
 #include "metrics/metrics.hpp"
 #include "upstream/upstream.hpp"
 
@@ -29,9 +30,27 @@ struct ProxyMetrics {
   Gauge& inflight;
   Gauge& embedder_ready;
 
+  // Cache path (design §9).
+  std::array<Counter*, 7> bypass{};  // indexed by NotCacheable
+  Histogram& lookup_seconds;         // vector search only
+  Histogram& embed_seconds;          // tokenize + ORT Run
+  Histogram& best_similarity;        // best score per semantic lookup, for threshold tuning (Phase 7)
+  Counter& tokens_saved;
+  Counter& embed_errors;
+  Counter& embed_rejected;
+  Counter& internal_errors;
+
+  Counter& store_skipped(std::string_view reason) {
+    return registry_.counter("semcache_store_skipped_total", "Cacheable responses not stored",
+                             "reason=\"" + std::string(reason) + "\"");
+  }
+
   void count_upstream_status(unsigned status) {
     if (status >= 100 && status < 600) upstream_responses[status / 100 - 1]->inc();
   }
+
+ private:
+  MetricsRegistry& registry_;
 };
 
 inline ProxyMetrics::ProxyMetrics(MetricsRegistry& r)
@@ -45,7 +64,20 @@ inline ProxyMetrics::ProxyMetrics(MetricsRegistry& r)
       upstream_seconds(r.histogram("semcache_upstream_seconds", "Upstream exchange duration",
                                    latency_buckets_seconds())),
       inflight(r.gauge("semcache_inflight", "Chat requests currently being handled")),
-      embedder_ready(r.gauge("semcache_embedder_ready", "1 if the embedding model is loaded")) {
+      embedder_ready(r.gauge("semcache_embedder_ready", "1 if the embedding model is loaded")),
+      lookup_seconds(r.histogram("semcache_lookup_seconds", "Vector search time per lookup", latency_buckets_seconds())),
+      embed_seconds(r.histogram("semcache_embed_seconds", "Embedding time per prompt", latency_buckets_seconds())),
+      best_similarity(r.histogram("semcache_best_similarity", "Best cosine similarity found per semantic lookup",
+                                  {0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.925, 0.95, 0.975, 0.99, 1.0})),
+      tokens_saved(r.counter("semcache_tokens_saved_total", "Upstream tokens (usage.total_tokens) served from cache")),
+      embed_errors(r.counter("semcache_embed_errors_total", "Embedding failures (request failed open)")),
+      embed_rejected(r.counter("semcache_embed_queue_rejected_total", "Embed queue full (request failed open)")),
+      internal_errors(r.counter("semcache_cache_internal_errors_total", "Cache-layer exceptions (request failed open)")),
+      registry_(r) {
+  for (std::size_t i = 0; i < bypass.size(); ++i) {
+    bypass[i] = &r.counter("semcache_bypass_total", "Requests not eligible for caching",
+                           "reason=\"" + std::string(to_string(static_cast<NotCacheable>(i))) + "\"");
+  }
   for (std::size_t i = 0; i < requests.size(); ++i) {
     requests[i] = &r.counter("semcache_requests_total", "Chat completion requests by cache result",
                              "result=\"" + std::string(kCacheResultNames[i]) + "\"");

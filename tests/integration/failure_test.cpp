@@ -19,7 +19,7 @@ TEST(Failure, Upstream5xxIsPassedThrough) {
   auto r = chat(env.port(), "q", false, fault("status=503"));
   EXPECT_EQ(r.status, 503u);
   EXPECT_EQ(nlohmann::json::parse(r.body)["error"]["message"], "injected fault");
-  EXPECT_EQ(r.header("x-semcache"), "BYPASS");
+  EXPECT_EQ(r.header("x-semcache"), "MISS");
 }
 
 TEST(Failure, UnreachableUpstreamIs502) {
@@ -27,7 +27,7 @@ TEST(Failure, UnreachableUpstreamIs502) {
   auto r = chat(env.port(), "q");
   EXPECT_EQ(r.status, 502u);
   EXPECT_EQ(error_code(r), "upstream_unavailable");
-  EXPECT_EQ(r.header("x-semcache"), "BYPASS");
+  EXPECT_EQ(r.header("x-semcache"), "MISS");
 }
 
 TEST(Failure, FirstByteTimeoutIs504) {

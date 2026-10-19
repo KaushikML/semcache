@@ -5,7 +5,6 @@
 #include "auth/tenants.hpp"
 #include "http/beast_response_writer.hpp"
 #include "config/config.hpp"
-#include "embed/embedder.hpp"
 #include "limits/rate_limiter.hpp"
 #include "metrics/metrics.hpp"
 #include "net/listener.hpp"
@@ -19,9 +18,9 @@ namespace semcache {
 // RequestPipeline.
 class ProxyServer {
  public:
-  // `embedder` is null when the model failed to load: the proxy still serves (fail open) and
-  // /readyz reports the embedder as degraded.
-  ProxyServer(net::io_context& ioc, const Config& cfg, Upstream& upstream, Embedder* embedder,
+  // `cache.embedder` is null when the model failed to load: the proxy still serves (fail open,
+  // exact-match caching only) and /readyz reports the embedder as degraded.
+  ProxyServer(net::io_context& ioc, const Config& cfg, Upstream& upstream, CacheServices cache,
               MetricsRegistry& registry);
 
   [[nodiscard]] std::uint16_t port() const { return listener_.port(); }
@@ -36,13 +35,14 @@ class ProxyServer {
   // Returns whether the connection may be kept alive.
   Task<bool> route(beast::tcp_stream& stream, Request& req, const tcp::endpoint& remote);
   Task<bool> handle_chat(beast::tcp_stream& stream, Request& req, const tcp::endpoint& remote);
+  [[nodiscard]] std::string stats_json() const;
   Task<bool> reject(BeastResponseWriter& w, const Request& req, std::uint64_t request_id,
                     const tcp::endpoint& remote, unsigned status, std::string_view message,
                     std::string_view code, const HeaderList& headers);
 
   const Config& cfg_;
   MetricsRegistry& registry_;
-  Embedder* embedder_;
+  CacheServices cache_;
   ProxyMetrics metrics_;
   TenantDirectory tenants_;
   RateLimiter tenant_limiter_;

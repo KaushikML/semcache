@@ -25,6 +25,12 @@ find_package(utf8proc CONFIG REQUIRED)
 
 add_library(semcache_core STATIC
   src/common/sha256.cpp
+  src/common/worker_pool.cpp
+  src/cache/cache_store.cpp
+  src/cache/completion_codec.cpp
+  src/cache/context_key.cpp
+  src/index/simd.cpp
+  src/index/brute_force_index.cpp
   src/config/config.cpp
   src/embed/bert_normalizer.cpp
   src/embed/wordpiece_tokenizer.cpp
@@ -68,6 +74,9 @@ if(SEMCACHE_BUILD_BENCH)
   target_link_libraries(semcache_bench_embed PRIVATE semcache_core benchmark::benchmark)
   target_compile_definitions(semcache_bench_embed PRIVATE SEMCACHE_MODEL_DIR="${PROJECT_SOURCE_DIR}/models")
   semcache_set_warnings(semcache_bench_embed)
+  add_executable(semcache_bench_index bench/index_bench.cpp)
+  target_link_libraries(semcache_bench_index PRIVATE semcache_core benchmark::benchmark)
+  semcache_set_warnings(semcache_bench_index)
 endif()
 
 if(SEMCACHE_BUILD_TESTS)

@@ -11,6 +11,11 @@ endif()
 
 add_executable(semcache_unit_tests
   unit/config_test.cpp
+  unit/cache_store_test.cpp
+  unit/completion_codec_test.cpp
+  unit/context_key_test.cpp
+  unit/simd_test.cpp
+  unit/vector_index_test.cpp
   unit/log_test.cpp
   unit/metrics_test.cpp
   unit/rate_limiter_test.cpp
@@ -18,6 +23,7 @@ add_executable(semcache_unit_tests
   unit/mock_response_test.cpp
   unit/bert_normalizer_test.cpp
   unit/tokenizer_test.cpp
+  unit/worker_pool_test.cpp
   unit/embedder_test.cpp
 )
 target_include_directories(semcache_unit_tests PRIVATE .)
@@ -31,7 +37,12 @@ add_executable(semcache_integration_tests
   integration/passthrough_test.cpp
   integration/streaming_test.cpp
   integration/failure_test.cpp
+  integration/cache_test.cpp
+  integration/semantic_model_test.cpp
 )
 target_include_directories(semcache_integration_tests PRIVATE .)
+target_compile_definitions(semcache_integration_tests PRIVATE
+  SEMCACHE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+  SEMCACHE_MODEL_DIR="${PROJECT_SOURCE_DIR}/models")
 target_link_libraries(semcache_integration_tests PRIVATE semcache_core semcache_mock GTest::gtest_main)
 gtest_discover_tests(semcache_integration_tests DISCOVERY_TIMEOUT 30 PROPERTIES ENVIRONMENT "${SEMCACHE_TEST_ENV}")
