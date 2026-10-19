@@ -12,3 +12,4 @@ build/
 .venv/
 data/
 *.onnx
+!tests/data/
