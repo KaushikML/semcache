@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "config/config.hpp"
+#include "fake_embedder.hpp"
 #include "metrics/metrics.hpp"
 #include "mock_upstream.hpp"
 #include "net/asio.hpp"
@@ -63,9 +64,13 @@ inline std::uint16_t closed_port() {
   return p;
 }
 
+// Which embedder the proxy gets: a deterministic fake, or none (model failed to load).
+enum class WithEmbedder { fake, none };
+
 class TestEnv {
  public:
-  explicit TestEnv(mock::MockConfig mock_cfg = fast_mock(), const std::function<void(Config&)>& tweak = {})
+  explicit TestEnv(mock::MockConfig mock_cfg = fast_mock(), const std::function<void(Config&)>& tweak = {},
+                   WithEmbedder embedder = WithEmbedder::fake)
       : work_(net::make_work_guard(ioc_)) {
     mock_ = std::make_unique<mock::MockUpstream>(ioc_, mock_cfg);
     mock_->start();
@@ -73,7 +78,8 @@ class TestEnv {
     if (tweak) tweak(cfg_);
     finalize_config(cfg_);
     upstream_ = std::make_unique<HttpUpstream>(cfg_.upstream, tls_);
-    proxy_ = std::make_unique<ProxyServer>(ioc_, cfg_, *upstream_, registry_);
+    proxy_ = std::make_unique<ProxyServer>(ioc_, cfg_, *upstream_,
+                                           embedder == WithEmbedder::fake ? &embedder_ : nullptr, registry_);
     proxy_->start();
     for (int i = 0; i < 2; ++i) threads_.emplace_back([this] { ioc_.run(); });
   }
@@ -105,6 +111,7 @@ class TestEnv {
   net::executor_work_guard<net::io_context::executor_type> work_;
   ssl::context tls_{make_client_tls_context(false)};
   MetricsRegistry registry_;
+  FakeEmbedder embedder_;
   Config cfg_;
   std::unique_ptr<mock::MockUpstream> mock_;
   std::unique_ptr<HttpUpstream> upstream_;

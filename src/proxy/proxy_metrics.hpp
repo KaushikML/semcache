@@ -27,6 +27,7 @@ struct ProxyMetrics {
   Histogram& request_seconds;
   Histogram& upstream_seconds;
   Gauge& inflight;
+  Gauge& embedder_ready;
 
   void count_upstream_status(unsigned status) {
     if (status >= 100 && status < 600) upstream_responses[status / 100 - 1]->inc();
@@ -43,7 +44,8 @@ inline ProxyMetrics::ProxyMetrics(MetricsRegistry& r)
                                   latency_buckets_seconds())),
       upstream_seconds(r.histogram("semcache_upstream_seconds", "Upstream exchange duration",
                                    latency_buckets_seconds())),
-      inflight(r.gauge("semcache_inflight", "Chat requests currently being handled")) {
+      inflight(r.gauge("semcache_inflight", "Chat requests currently being handled")),
+      embedder_ready(r.gauge("semcache_embedder_ready", "1 if the embedding model is loaded")) {
   for (std::size_t i = 0; i < requests.size(); ++i) {
     requests[i] = &r.counter("semcache_requests_total", "Chat completion requests by cache result",
                              "result=\"" + std::string(kCacheResultNames[i]) + "\"");

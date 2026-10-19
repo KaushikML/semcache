@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "config/config.hpp"
+#include "embed/onnx_embedder.hpp"
 #include "log/log.hpp"
 #include "metrics/metrics.hpp"
 #include "net/asio.hpp"
@@ -74,9 +75,21 @@ int main(int argc, char** argv) {
   HttpUpstream upstream(cfg.upstream, tls_ctx);
   MetricsRegistry registry;
 
+  // A missing or broken model degrades to passthrough instead of failing startup (fail open).
+  std::unique_ptr<OnnxEmbedder> embedder;
+  try {
+    const auto t0 = std::chrono::steady_clock::now();
+    embedder = std::make_unique<OnnxEmbedder>(cfg.embedder);
+    log::info("embedder loaded", {{"model", cfg.embedder.model_path},
+                                  {"load_ms", std::chrono::duration<double, std::milli>(
+                                                  std::chrono::steady_clock::now() - t0).count()}});
+  } catch (const EmbedderLoadError& e) {
+    log::warn("embedder unavailable; serving passthrough only", {{"error", e.what()}});
+  }
+
   std::unique_ptr<ProxyServer> server;
   try {
-    server = std::make_unique<ProxyServer>(ioc, cfg, upstream, registry);
+    server = std::make_unique<ProxyServer>(ioc, cfg, upstream, embedder.get(), registry);
   } catch (const std::exception& e) {
     log::error("failed to start listener", {{"error", e.what()}});
     return 1;

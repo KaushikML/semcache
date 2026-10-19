@@ -46,15 +46,19 @@ class InflightSlot {
 
 }  // namespace
 
-ProxyServer::ProxyServer(net::io_context& ioc, const Config& cfg, Upstream& upstream, MetricsRegistry& registry)
+ProxyServer::ProxyServer(net::io_context& ioc, const Config& cfg, Upstream& upstream, Embedder* embedder,
+                         MetricsRegistry& registry)
     : cfg_(cfg),
       registry_(registry),
+      embedder_(embedder),
       metrics_(registry),
       tenants_(cfg.tenants),
       tenant_limiter_(cfg.limits.rps, cfg.limits.burst),
       pipeline_(cfg, upstream, metrics_),
       listener_(ioc, tcp::endpoint(net::ip::make_address(cfg.server.host), cfg.server.port),
-                [this](beast::tcp_stream s, tcp::endpoint r) { return session(std::move(s), r); }) {}
+                [this](beast::tcp_stream s, tcp::endpoint r) { return session(std::move(s), r); }) {
+  metrics_.embedder_ready.set(embedder_ != nullptr ? 1 : 0);
+}
 
 Task<void> ProxyServer::session(beast::tcp_stream stream, tcp::endpoint remote) {
   beast::flat_buffer buffer;
@@ -96,8 +100,12 @@ Task<bool> ProxyServer::route(beast::tcp_stream& stream, Request& req, const tcp
   if (path == "/healthz" && req.method() == http::verb::get) {
     co_await w.send(200, kJson, R"({"status":"ok"})", kNoHeaders);
   } else if (path == "/readyz" && req.method() == http::verb::get) {
-    // Upstream is validated at startup, so nothing can be degraded yet. Phase 2 adds the embedder.
-    co_await w.send(200, kJson, R"({"status":"ready","degraded":[]})", kNoHeaders);
+    // Upstream is validated at startup; only the embedder can be missing. Degraded is still 200:
+    // the proxy serves every request (fail open), it just cannot make semantic hits.
+    co_await w.send(200, kJson,
+                    embedder_ != nullptr ? R"({"status":"ready","degraded":[]})"
+                                         : R"({"status":"degraded","degraded":["embedder"]})",
+                    kNoHeaders);
   } else if (path == "/metrics" && req.method() == http::verb::get) {
     co_await w.send(200, "text/plain; version=0.0.4", registry_.render_prometheus(), kNoHeaders);
   } else {

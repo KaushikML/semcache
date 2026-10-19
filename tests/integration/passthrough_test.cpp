@@ -23,6 +23,22 @@ TEST(Passthrough, ReadyzListsNoDegradedComponents) {
   EXPECT_TRUE(j["degraded"].empty());
 }
 
+TEST(Passthrough, MissingEmbedderIsDegradedButStillServes) {
+  TestEnv env(fast_mock(), {}, WithEmbedder::none);
+  auto r = request(env.port(), {.method = http::verb::get, .target = "/readyz", .authorization = ""});
+  EXPECT_EQ(r.status, 200u) << "degraded still takes traffic: requests pass through (fail open)";
+  auto j = nlohmann::json::parse(r.body);
+  EXPECT_EQ(j["status"], "degraded");
+  EXPECT_EQ(j["degraded"], nlohmann::json::array({"embedder"}));
+
+  auto chat_r = chat(env.port(), "hi");
+  EXPECT_EQ(chat_r.status, 200u);
+  EXPECT_EQ(chat_r.header("x-semcache"), "BYPASS");
+
+  auto m = request(env.port(), {.method = http::verb::get, .target = "/metrics", .authorization = ""});
+  EXPECT_NE(m.body.find("semcache_embedder_ready 0"), std::string::npos);
+}
+
 TEST(Passthrough, NonStreamingBodyIsRelayedVerbatim) {
   TestEnv env;
   const auto body = chat_body("What is the refund policy?");
