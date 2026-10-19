@@ -31,7 +31,7 @@ semcache is a drop-in proxy (change only `base_url`). It returns a cached answer
 | F6 | If cosine ≥ `cache.similarity_threshold`, return the cached response. Re-stream it as SSE when `stream=true`. |
 | F7 | On a miss, forward to upstream, stream or return the response to the client, and store it if it is cacheable (§6.4). |
 | F8 | Coalesce in-flight requests with the same flight key: one upstream call, fanned out to all waiters (streaming waiters get chunks live) ([ADR-009](adr/009-coalescing-scope.md)). |
-| F9 | Response headers: `X-Semcache: HIT\|MISS\|COALESCED\|BYPASS`, `X-Semcache-Similarity`, `X-Semcache-Latency-Ms`. (`BYPASS` is a proposed addition: the request went straight upstream because caching was disabled for it or the cache layer failed open.) |
+| F9 | Response headers: `X-Semcache: HIT\|MISS\|COALESCED\|BYPASS`, `X-Semcache-Similarity` (on HIT the matched score; on MISS the best score found, if the partition was searched), `X-Semcache-Latency-Ms`. (`BYPASS` is a proposed addition: the request went straight upstream because caching was disabled for it or the cache layer failed open.) |
 | F10 | Per-request opt-out: `X-Semcache-Bypass: 1` skips lookup and store. Optional `X-Semcache-Tags: a,b` attaches purge tags to the stored entry. |
 | F11 | Eviction: per-entry TTL, plus approximate-LRU under a global byte budget and a per-tenant byte quota ([ADR-007](adr/007-eviction-ttl-plus-clock.md)). |
 | F12 | Persistence across restart (snapshot + WAL, [ADR-008](adr/008-persistence-snapshot-plus-wal.md)) and purge by tenant / tag / context (`POST /admin/purge`). |
@@ -117,6 +117,12 @@ force first, HNSW behind the same interface, with the switch point
 `index.hnsw_min_partition_size` set from Phase 5 measurements
 ([ADR-006](adr/006-brute-force-first-then-hnsw.md)). Future lever: fp16/int8 vectors halve or
 quarter the bandwidth.
+
+**Measured (Phase 3, [bench/results/phase3](../bench/results/phase3/README.md)):** AVX2 top-8 scan
+takes 69 µs at 1K, **1.3 ms at 10K**, 2.8 ms at 20K and 16 ms at 100K vectors (~10–11 GiB/s once
+out of cache), in line with the estimates above. The 2 ms budget holds to **~15K vectors per
+partition**. The scalar fallback is ~15× slower. End-to-end on the dev box: an exact HIT adds
+~0.6 ms in the proxy; a semantic HIT ~10 ms, dominated by embedding (§5.2).
 
 ### 5.4 Request limits (derived)
 
@@ -351,6 +357,12 @@ shared lock and release the lock before any I/O.
 
 TSan runs on the full integration suite in CI (Phase 4 gate).
 
+**Phase 3 interim (until the writer thread lands in Phase 4):** mutations run synchronously on
+the calling thread (I/O thread for inserts, sweeper timer for expiry), serialized by a writer
+mutex **W** taken *before* L2/L3 (order W → L2 → L3). Readers never take W. Each insert holds W
+for an index append plus O(evicted) work, with no I/O. This keeps the store TSan-clean now; the
+writer queue makes inserts asynchronous and moves them off I/O threads.
+
 ### 7.4 Backpressure
 
 | Point | Bound | When full |
@@ -487,6 +499,7 @@ store_finish_reasons = ["stop", "tool_calls"]
 writer_queue_capacity = 4096
 restream_chunk_chars = 16
 restream_delay_ms = 0
+sweep_interval_ms = 60000
 
 [index]
 kind = "auto"                 # "brute" | "hnsw" | "auto"

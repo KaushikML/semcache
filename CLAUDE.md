@@ -17,6 +17,8 @@ Source of truth for design: `docs/design.md`. Decisions: `docs/adr/`.
 - Python ONLY for tooling (model export, dataset prep, golden files, plots). Never in the product.
 - Dashboard: static HTML/CSS/vanilla JS served by the binary. No Node/npm/CDN; works offline.
 - Linux first (WSL2 dev box: g++ 13, clang, 8 cores, AVX2).
+- **Build with at most 4 parallel jobs** (`cmake --build <dir> -j4`, `ninja -j4`): the dev box has
+  limited RAM (~8 GB) and higher parallelism has killed sessions. Run sanitizer builds one at a time.
 
 ## System design rules
 - Requirements, sizing and non-goals live in `docs/design.md`; limits come from the sizing math, not guesses.
@@ -62,11 +64,14 @@ Source of truth for design: `docs/design.md`. Decisions: `docs/adr/`.
 - Phase 0 (design): done. Decisions: proxy-issued tenant keys; context key hashes last K=2 prior
   messages (configurable, -1 = all); vcpkg + prebuilt ORT; own WordPiece tokenizer.
 - Phase 1 (walking skeleton): done. Deferred `/stats`, `/stats/stream` to Phase 3/8.
-- **Phase 2 (embedding): implemented, awaiting review.** Own WordPiece (char classes generated from
-  HF: `tools/gen_bert_tables.py`), `OnnxEmbedder` (ORT 1.20.1, model pinned by `scripts/fetch-model.sh`,
-  ADR-011). Gates: exact ids on 3,125 golden strings, exhaustive per-code-point normalizer check,
-  min cosine 0.9999994 vs sentence-transformers. Missing model => `/readyz` 200 "degraded".
-  Bench (`bench/results/phase2`): 22 ms @ 32 tokens on the power-limited dev laptop, far over the
-  10 ms HIT budget; re-measure on target hardware. ORT sanitizer noise suppressed in `tests/sanitizers/`.
-  Embed pool (bounded queue, threads) deferred to Phase 3/4, where the pipeline uses it.
+- Phase 2 (embedding): done. Own WordPiece (char classes generated from HF), `OnnxEmbedder`
+  (ORT 1.20.1, model pinned, ADR-011). Min cosine 0.9999994 vs sentence-transformers. Embed latency
+  on the dev laptop is far over the 10 ms HIT budget for long prompts; re-measure on target hardware.
+- **Phase 3 (cache v1): implemented, awaiting review.** Context key (denylist of transport fields,
+  ADR-002 notes), AVX2/scalar dot, `VectorIndex` + `BruteForceIndex`, `CacheStore` (partitions,
+  exact fast path, TTL, CLOCK under global budget + per-tenant quota), bounded `WorkerPool` as
+  embed pool, SSE assembly/re-stream, HIT/MISS/BYPASS headers, metrics, `/stats`.
+  Interim: mutations synchronous under writer mutex W (design §7.3); Phase 4 adds the writer
+  thread and coalescing. Brute force meets the 2 ms lookup budget to ~15K vectors/partition.
+  Deferred: tags/purge (Phase 6), `/stats/stream` + recent-requests ring (Phase 8).
 - Python tooling: `python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt`.
