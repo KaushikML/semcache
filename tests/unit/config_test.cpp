@@ -125,6 +125,24 @@ TEST(Config, ValidationErrors) {
   EXPECT_THROW((void)load_config_from_string("mode = \"prod\"\n" + std::string(kMinimal), env), ConfigError);
 }
 
+TEST(Config, EmbedderSection) {
+  auto env = fake_env({{"KEY_ACME", "k"}, {"SEMCACHE_EMBEDDER__MAX_TOKENS", "128"}});
+  auto cfg = load_config_from_string(std::string("[embedder]\nmodel_path = \"/m.onnx\"\nvocab_path = \"/v.txt\"\n") +
+                                         std::string(kMinimal),
+                                     env);
+  EXPECT_EQ(cfg.embedder.model_path, "/m.onnx");
+  EXPECT_EQ(cfg.embedder.vocab_path, "/v.txt");
+  EXPECT_EQ(cfg.embedder.max_tokens, 128u);
+  EXPECT_EQ(cfg.embedder.intra_op_threads, 1);
+
+  auto plain = fake_env({{"KEY_ACME", "k"}});
+  EXPECT_THROW((void)load_config_from_string(std::string("[embedder]\nmax_tokens = 2\n") + std::string(kMinimal), plain),
+               ConfigError);
+  EXPECT_THROW(
+      (void)load_config_from_string(std::string("[embedder]\nintra_op_threads = 0\n") + std::string(kMinimal), plain),
+      ConfigError);
+}
+
 TEST(Config, ParseErrorReportsLine) {
   try {
     (void)load_config_from_string("[server\nport = 1\n", fake_env({}));

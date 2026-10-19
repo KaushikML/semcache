@@ -10,6 +10,8 @@
     "nlohmann-json",
     "spdlog",
     "tomlplusplus",
-    "gtest"
+    "gtest",
+    "utf8proc",
+    "benchmark"
   ]
 }

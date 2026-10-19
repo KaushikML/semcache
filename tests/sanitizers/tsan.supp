@@ -1,0 +1,5 @@
+# ONNX Runtime is a prebuilt, uninstrumented library (ADR-003). Its arena allocator frees memory on
+# a different Run() thread than allocated it, synchronized internally where TSan cannot see.
+# Concurrent Session::Run is documented thread-safe. Only races with an ORT frame on the stack are
+# suppressed; every other report (all I/O, pipeline and cache code) still fails the build.
+race:libonnxruntime.so

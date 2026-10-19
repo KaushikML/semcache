@@ -217,6 +217,10 @@ void finalize_config(Config& cfg) {
   }
   if (u.max_response_bytes == 0) throw ConfigError("upstream.max_response_bytes must be > 0");
 
+  // Model files are checked when the embedder loads; a missing model degrades, it does not fail startup.
+  if (cfg.embedder.max_tokens < 3) throw ConfigError("embedder.max_tokens must be >= 3");
+  if (cfg.embedder.intra_op_threads < 1) throw ConfigError("embedder.intra_op_threads must be >= 1");
+
   if (cfg.limits.rps <= 0 || cfg.limits.burst < 1) {
     throw ConfigError("limits.rps must be > 0 and limits.burst >= 1");
   }
@@ -272,6 +276,12 @@ Config load_config_from_string(std::string_view toml_text, const EnvLookup& env)
   r.read("upstream", "total_timeout_ms", u.total_timeout);
   r.read("upstream", "max_response_bytes", u.max_response_bytes);
   if (auto key = env("SEMCACHE_UPSTREAM_API_KEY"); key && !key->empty()) u.api_key = Secret(*key);
+
+  auto& e = cfg.embedder;
+  r.read("embedder", "model_path", e.model_path);
+  r.read("embedder", "vocab_path", e.vocab_path);
+  r.read("embedder", "max_tokens", e.max_tokens);
+  r.read("embedder", "intra_op_threads", e.intra_op_threads);
 
   r.read("limits", "rps", cfg.limits.rps);
   r.read("limits", "burst", cfg.limits.burst);

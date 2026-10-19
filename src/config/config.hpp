@@ -51,6 +51,15 @@ struct UpstreamConfig {
   Secret api_key;  // from SEMCACHE_UPSTREAM_API_KEY only, never from the file
 };
 
+struct EmbedderConfig {
+  std::string model_path = "models/all-MiniLM-L6-v2.onnx";
+  std::string vocab_path = "models/vocab.txt";
+  // Longer prompts are not embedded (exact-match only), see design §5.4. 256 is the model's
+  // training max_seq_length; it includes [CLS] and [SEP].
+  std::size_t max_tokens = 256;
+  int intra_op_threads = 1;  // ORT threads per Run; parallelism comes from the embed pool (ADR-005)
+};
+
 struct LimitsConfig {
   double rps = 50.0;  // per-tenant token bucket refill rate
   double burst = 100.0;
@@ -71,6 +80,7 @@ struct Config {
   Mode mode = Mode::live;
   ServerConfig server;
   UpstreamConfig upstream;
+  EmbedderConfig embedder;
   LimitsConfig limits;
   LoggingConfig logging;
   std::vector<TenantConfig> tenants;

@@ -1,6 +1,14 @@
 find_package(GTest CONFIG REQUIRED)
 include(GoogleTest)
 
+set(SEMCACHE_TEST_ENV "")
+if(SEMCACHE_SANITIZE MATCHES "address")
+  set(SEMCACHE_TEST_ENV "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/sanitizers/lsan.supp")
+elseif(SEMCACHE_SANITIZE MATCHES "thread")
+  set(SEMCACHE_TEST_ENV
+      "TSAN_OPTIONS=halt_on_error=1 second_deadlock_stack=1 suppressions=${CMAKE_CURRENT_SOURCE_DIR}/sanitizers/tsan.supp")
+endif()
+
 add_executable(semcache_unit_tests
   unit/config_test.cpp
   unit/log_test.cpp
@@ -8,10 +16,16 @@ add_executable(semcache_unit_tests
   unit/rate_limiter_test.cpp
   unit/tenants_test.cpp
   unit/mock_response_test.cpp
+  unit/bert_normalizer_test.cpp
+  unit/tokenizer_test.cpp
+  unit/embedder_test.cpp
 )
 target_include_directories(semcache_unit_tests PRIVATE .)
+target_compile_definitions(semcache_unit_tests PRIVATE
+  SEMCACHE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+  SEMCACHE_MODEL_DIR="${PROJECT_SOURCE_DIR}/models")
 target_link_libraries(semcache_unit_tests PRIVATE semcache_core semcache_mock GTest::gtest_main)
-gtest_discover_tests(semcache_unit_tests DISCOVERY_TIMEOUT 30)
+gtest_discover_tests(semcache_unit_tests DISCOVERY_TIMEOUT 30 PROPERTIES ENVIRONMENT "${SEMCACHE_TEST_ENV}")
 
 add_executable(semcache_integration_tests
   integration/passthrough_test.cpp
@@ -20,4 +34,4 @@ add_executable(semcache_integration_tests
 )
 target_include_directories(semcache_integration_tests PRIVATE .)
 target_link_libraries(semcache_integration_tests PRIVATE semcache_core semcache_mock GTest::gtest_main)
-gtest_discover_tests(semcache_integration_tests DISCOVERY_TIMEOUT 30)
+gtest_discover_tests(semcache_integration_tests DISCOVERY_TIMEOUT 30 PROPERTIES ENVIRONMENT "${SEMCACHE_TEST_ENV}")

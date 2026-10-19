@@ -26,6 +26,12 @@ idle_timeout_ms = 30000            # max gap between body reads (streams)
 total_timeout_ms = 120000          # whole exchange
 max_response_bytes = 8388608       # non-streaming bodies are buffered up to this
 
+[embedder]
+model_path = "models/all-MiniLM-L6-v2.onnx"   # scripts/fetch-model.sh; missing => passthrough only
+vocab_path = "models/vocab.txt"
+max_tokens = 256                   # longer prompts are never embedded (exact match only)
+intra_op_threads = 1               # ORT threads per inference; parallelism comes from the embed pool
+
 [limits]
 rps = 50                           # per-tenant token bucket
 burst = 100

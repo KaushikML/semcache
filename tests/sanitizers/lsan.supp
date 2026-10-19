@@ -1,0 +1,4 @@
+# ONNX Runtime is a prebuilt, uninstrumented library (ADR-003). It makes a few one-time,
+# process-global allocations (~128 B) that are never freed. Scope: allocations whose stack
+# is entirely inside libonnxruntime; leaks with any semcache frame are still reported.
+leak:libonnxruntime.so
