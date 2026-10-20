@@ -70,7 +70,7 @@ struct NewEntry {
   std::int64_t total_tokens = -1;
 };
 
-enum class InsertOutcome { stored, too_large };
+enum class InsertOutcome { stored, too_large, failed };  // failed: exception while applying
 
 struct NearestMatch {
   EntryPtr entry;     // best live entry in the partition, or null if none
