@@ -22,12 +22,12 @@ bool has_metric(const std::string& metrics, const std::string& line) {
 
 TEST(Cache, MissThenExactHitWithoutCallingUpstream) {
   TestEnv env;
-  auto miss = chat(env.port(), "What is your refund policy?");
+  auto miss = env.chat("What is your refund policy?");
   ASSERT_EQ(miss.status, 200u) << miss.body;
   EXPECT_EQ(miss.header("x-semcache"), "MISS");
   EXPECT_TRUE(miss.header("x-semcache-similarity").empty()) << "empty partition: nothing to compare";
 
-  auto hit = chat(env.port(), "What is your refund policy?");
+  auto hit = env.chat("What is your refund policy?");
   ASSERT_EQ(hit.status, 200u) << hit.body;
   EXPECT_EQ(hit.header("x-semcache"), "HIT");
   EXPECT_EQ(hit.header("x-semcache-similarity"), "1.0000");
@@ -41,8 +41,8 @@ TEST(Cache, MissThenExactHitWithoutCallingUpstream) {
 TEST(Cache, ParaphraseAboveThresholdIsASemanticHit) {
   TestEnv env;  // threshold 0.90
   env.fake_embedder().alias("How do I get my money back?", "What is your refund policy?", 0.95f);
-  auto first = chat(env.port(), "What is your refund policy?");
-  auto para = chat(env.port(), "How do I get my money back?");
+  auto first = env.chat("What is your refund policy?");
+  auto para = env.chat("How do I get my money back?");
   ASSERT_EQ(para.status, 200u);
   EXPECT_EQ(para.header("x-semcache"), "HIT");
   EXPECT_EQ(para.header("x-semcache-similarity"), "0.9500");
@@ -53,33 +53,33 @@ TEST(Cache, ParaphraseAboveThresholdIsASemanticHit) {
 TEST(Cache, BelowThresholdIsAMissThatReportsTheBestScore) {
   TestEnv env;
   env.fake_embedder().alias("Can I return a gift?", "What is your refund policy?", 0.85f);
-  chat(env.port(), "What is your refund policy?");
-  auto r = chat(env.port(), "Can I return a gift?");
+  env.chat("What is your refund policy?");
+  auto r = env.chat("Can I return a gift?");
   EXPECT_EQ(r.header("x-semcache"), "MISS");
   EXPECT_EQ(r.header("x-semcache-similarity"), "0.8500");
   EXPECT_EQ(env.mock().chat_requests(), 2u);
-  EXPECT_EQ(chat(env.port(), "Can I return a gift?").header("x-semcache"), "HIT") << "the miss was stored";
+  EXPECT_EQ(env.chat("Can I return a gift?").header("x-semcache"), "HIT") << "the miss was stored";
 }
 
 TEST(Cache, ThresholdIsConfigurable) {
   TestEnv env(fast_mock(), [](Config& c) { c.cache.similarity_threshold = 0.80f; });
   env.fake_embedder().alias("Can I return a gift?", "What is your refund policy?", 0.85f);
-  chat(env.port(), "What is your refund policy?");
-  EXPECT_EQ(chat(env.port(), "Can I return a gift?").header("x-semcache"), "HIT");
+  env.chat("What is your refund policy?");
+  EXPECT_EQ(env.chat("Can I return a gift?").header("x-semcache"), "HIT");
 }
 
 TEST(Cache, StreamedMissIsStoredAndServedToBothModes) {
   TestEnv env;
-  auto miss = chat(env.port(), "Explain TCP", /*stream=*/true, {{"stream_options", {{"include_usage", true}}}});
+  auto miss = env.chat("Explain TCP", /*stream=*/true, {{"stream_options", {{"include_usage", true}}}});
   ASSERT_EQ(miss.status, 200u);
   EXPECT_EQ(miss.header("x-semcache"), "MISS");
   const auto expected = assembled_content(sse_events(miss.body));
 
-  auto plain = chat(env.port(), "Explain TCP");
+  auto plain = env.chat("Explain TCP");
   EXPECT_EQ(plain.header("x-semcache"), "HIT");
   EXPECT_EQ(content_of(plain), expected);
 
-  auto streamed = chat(env.port(), "Explain TCP", true, {{"stream_options", {{"include_usage", true}}}});
+  auto streamed = env.chat("Explain TCP", true, {{"stream_options", {{"include_usage", true}}}});
   EXPECT_EQ(streamed.header("x-semcache"), "HIT");
   EXPECT_EQ(streamed.header("content-type"), "text/event-stream");
   auto events = sse_events(streamed.body);
@@ -94,8 +94,8 @@ TEST(Cache, StreamedMissIsStoredAndServedToBothModes) {
 
 TEST(Cache, TenantsNeverShareEntries) {
   TestEnv env;
-  chat(env.port(), "What is your refund policy?");
-  auto other = request(env.port(), {.body = chat_body("What is your refund policy?"),
+  env.chat("What is your refund policy?");
+  auto other = env.request({.body = chat_body("What is your refund policy?"),
                                     .authorization = "Bearer " + std::string(kOtherKey)});
   EXPECT_EQ(other.header("x-semcache"), "MISS");
   EXPECT_EQ(env.mock().chat_requests(), 2u);
@@ -103,40 +103,40 @@ TEST(Cache, TenantsNeverShareEntries) {
 
 TEST(Cache, DifferentContextMisses) {
   TestEnv env;
-  chat(env.port(), "What is your refund policy?");
-  EXPECT_EQ(chat(env.port(), "What is your refund policy?", false, {{"temperature", 0.2}}).header("x-semcache"), "MISS");
+  env.chat("What is your refund policy?");
+  EXPECT_EQ(env.chat("What is your refund policy?", false, {{"temperature", 0.2}}).header("x-semcache"), "MISS");
   json with_system = json::parse(chat_body("What is your refund policy?"));
   with_system["messages"].insert(with_system["messages"].begin(), {{"role", "system"}, {"content", "Be terse."}});
-  EXPECT_EQ(request(env.port(), {.body = with_system.dump()}).header("x-semcache"), "MISS");
+  EXPECT_EQ(env.request({.body = with_system.dump()}).header("x-semcache"), "MISS");
 }
 
 TEST(Cache, BypassHeaderSkipsLookupAndStore) {
   TestEnv env;
   ClientRequest r{.body = chat_body("hello"), .headers = {{"X-Semcache-Bypass", "1"}}};
-  EXPECT_EQ(request(env.port(), r).header("x-semcache"), "BYPASS");
-  EXPECT_EQ(chat(env.port(), "hello").header("x-semcache"), "MISS") << "the bypassed response was not stored";
+  EXPECT_EQ(env.request(r).header("x-semcache"), "BYPASS");
+  EXPECT_EQ(env.chat("hello").header("x-semcache"), "MISS") << "the bypassed response was not stored";
   EXPECT_TRUE(has_metric(env.metrics(), R"(semcache_bypass_total{reason="bypass_header"} 1)"));
 }
 
 TEST(Cache, UncacheableRequestsBypass) {
   TestEnv env;
-  EXPECT_EQ(chat(env.port(), "hello", false, {{"n", 2}}).header("x-semcache"), "BYPASS");
-  EXPECT_EQ(chat(env.port(), "hello", false, {{"n", 2}}).header("x-semcache"), "BYPASS");
+  EXPECT_EQ(env.chat("hello", false, {{"n", 2}}).header("x-semcache"), "BYPASS");
+  EXPECT_EQ(env.chat("hello", false, {{"n", 2}}).header("x-semcache"), "BYPASS");
   EXPECT_EQ(env.mock().chat_requests(), 2u);
   EXPECT_TRUE(has_metric(env.metrics(), R"(semcache_bypass_total{reason="multiple_choices"} 2)"));
 }
 
 TEST(Cache, CacheDisabledBypassesEverything) {
   TestEnv env(fast_mock(), [](Config& c) { c.cache.enabled = false; });
-  chat(env.port(), "hello");
-  EXPECT_EQ(chat(env.port(), "hello").header("x-semcache"), "BYPASS");
+  env.chat("hello");
+  EXPECT_EQ(env.chat("hello").header("x-semcache"), "BYPASS");
 }
 
 TEST(Cache, UpstreamErrorsAreNeverStored) {
   TestEnv env;
   const json fault = {{"mock_fault", "status=503"}};
-  EXPECT_EQ(chat(env.port(), "hello", false, fault).status, 503u);
-  auto again = chat(env.port(), "hello", false, fault);
+  EXPECT_EQ(env.chat("hello", false, fault).status, 503u);
+  auto again = env.chat("hello", false, fault);
   EXPECT_EQ(again.status, 503u);
   EXPECT_EQ(again.header("x-semcache"), "MISS");
   EXPECT_TRUE(has_metric(env.metrics(), R"(semcache_store_skipped_total{reason="status"} 2)"));
@@ -145,15 +145,15 @@ TEST(Cache, UpstreamErrorsAreNeverStored) {
 TEST(Cache, InterruptedStreamsAreNeverStored) {
   TestEnv env;
   const json fault = {{"mock_fault", "reset-after=3"}};
-  chat(env.port(), "hello", true, fault);
-  EXPECT_EQ(chat(env.port(), "hello", true, fault).header("x-semcache"), "MISS");
+  env.chat("hello", true, fault);
+  EXPECT_EQ(env.chat("hello", true, fault).header("x-semcache"), "MISS");
   EXPECT_EQ(env.store().stats().entries, 0u);
 }
 
 TEST(Cache, EmbedderFailureFailsOpen) {
   TestEnv env;
   env.fake_embedder().fail_with(EmbedError::inference);
-  auto r = chat(env.port(), "hello");
+  auto r = env.chat("hello");
   EXPECT_EQ(r.status, 200u);
   EXPECT_EQ(r.header("x-semcache"), "BYPASS");
   EXPECT_EQ(env.store().stats().entries, 0u);
@@ -163,15 +163,15 @@ TEST(Cache, EmbedderFailureFailsOpen) {
 TEST(Cache, TooLongPromptIsCachedForExactMatchOnly) {
   TestEnv env;
   env.fake_embedder().fail_with(EmbedError::too_long);
-  EXPECT_EQ(chat(env.port(), "a very long prompt").header("x-semcache"), "MISS");
-  EXPECT_EQ(chat(env.port(), "a very long prompt").header("x-semcache"), "HIT");
+  EXPECT_EQ(env.chat("a very long prompt").header("x-semcache"), "MISS");
+  EXPECT_EQ(env.chat("a very long prompt").header("x-semcache"), "HIT");
 }
 
 TEST(Cache, WithoutEmbedderExactMatchStillWorks) {
   TestEnv env(fast_mock(), {}, WithEmbedder::none);
-  EXPECT_EQ(chat(env.port(), "hello").header("x-semcache"), "MISS");
-  EXPECT_EQ(chat(env.port(), "hello").header("x-semcache"), "HIT");
-  EXPECT_EQ(chat(env.port(), "hello there").header("x-semcache"), "MISS");
+  EXPECT_EQ(env.chat("hello").header("x-semcache"), "MISS");
+  EXPECT_EQ(env.chat("hello").header("x-semcache"), "HIT");
+  EXPECT_EQ(env.chat("hello there").header("x-semcache"), "MISS");
 }
 
 TEST(Cache, FullEmbedQueueFailsOpen) {
@@ -200,9 +200,9 @@ TEST(Cache, FullEmbedQueueFailsOpen) {
 
 TEST(Cache, StatsAndMetricsReflectHits) {
   TestEnv env;
-  chat(env.port(), "What is your refund policy?");
-  chat(env.port(), "What is your refund policy?");
-  auto s = request(env.port(), {.method = http::verb::get, .target = "/stats", .authorization = ""});
+  env.chat("What is your refund policy?");
+  env.chat("What is your refund policy?");
+  auto s = env.request({.method = http::verb::get, .target = "/stats", .authorization = ""});
   ASSERT_EQ(s.status, 200u);
   auto j = json::parse(s.body);
   EXPECT_EQ(j["requests"]["HIT"], 1);

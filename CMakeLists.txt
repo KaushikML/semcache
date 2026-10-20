@@ -27,6 +27,8 @@ add_library(semcache_core STATIC
   src/common/sha256.cpp
   src/common/worker_pool.cpp
   src/cache/cache_store.cpp
+  src/cache/cache_writer.cpp
+  src/coalesce/coalescer.cpp
   src/cache/completion_codec.cpp
   src/cache/context_key.cpp
   src/index/simd.cpp

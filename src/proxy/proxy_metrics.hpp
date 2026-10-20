@@ -39,6 +39,7 @@ struct ProxyMetrics {
   Counter& embed_errors;
   Counter& embed_rejected;
   Counter& internal_errors;
+  Counter& coalesce_independent;  // duplicates served alone: follower cap reached, or leader vanished
 
   Counter& store_skipped(std::string_view reason) {
     return registry_.counter("semcache_store_skipped_total", "Cacheable responses not stored",
@@ -73,6 +74,8 @@ inline ProxyMetrics::ProxyMetrics(MetricsRegistry& r)
       embed_errors(r.counter("semcache_embed_errors_total", "Embedding failures (request failed open)")),
       embed_rejected(r.counter("semcache_embed_queue_rejected_total", "Embed queue full (request failed open)")),
       internal_errors(r.counter("semcache_cache_internal_errors_total", "Cache-layer exceptions (request failed open)")),
+      coalesce_independent(r.counter("semcache_coalesce_independent_total",
+                                     "Duplicate requests served without coalescing (follower cap, leader gone)")),
       registry_(r) {
   for (std::size_t i = 0; i < bypass.size(); ++i) {
     bypass[i] = &r.counter("semcache_bypass_total", "Requests not eligible for caching",

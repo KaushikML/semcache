@@ -6,6 +6,8 @@
 #include <vector>
 
 #include "cache/cache_store.hpp"
+#include "cache/cache_writer.hpp"
+#include "coalesce/coalescer.hpp"
 #include "common/worker_pool.hpp"
 #include "config/config.hpp"
 #include "embed/onnx_embedder.hpp"
@@ -36,8 +38,9 @@ semcache::Task<void> wait_for_drain(const semcache::ProxyServer& server, semcach
   }
 }
 
-// Active TTL expiry (lazy expiry on reads handles correctness; this reclaims memory).
-semcache::Task<void> sweep_expired(semcache::CacheStore& store, std::chrono::milliseconds interval,
+// Active TTL expiry (lazy expiry on reads handles correctness; this reclaims memory). The sweep
+// itself runs on the writer thread, the only mutator of the store.
+semcache::Task<void> sweep_expired(semcache::CacheWriter& writer, std::chrono::milliseconds interval,
                                    const std::atomic<bool>& stopping) {
   using namespace semcache;
   net::steady_timer timer(co_await net::this_coro::executor);
@@ -45,7 +48,7 @@ semcache::Task<void> sweep_expired(semcache::CacheStore& store, std::chrono::mil
     timer.expires_after(interval);
     auto [ec] = co_await timer.async_wait(use_nothrow);
     if (ec || stopping.load()) co_return;
-    if (auto n = store.expire(CacheClock::now()); n > 0) log::info("expired cache entries", {{"count", n}});
+    writer.submit_expire();
   }
 }
 
@@ -105,7 +108,11 @@ int main(int argc, char** argv) {
   CacheStore store(cfg.cache, cfg.tenants, registry);
   std::unique_ptr<WorkerPool> embed_pool;
   if (embedder) embed_pool = std::make_unique<WorkerPool>("embed", cfg.embedder.threads, cfg.embedder.queue_capacity);
-  const CacheServices cache{&store, embedder.get(), embed_pool.get()};
+  // Declared before the writer so it outlives the writer thread's after-insert callbacks.
+  std::unique_ptr<Coalescer> coalescer;
+  if (cfg.coalescer.enabled) coalescer = std::make_unique<Coalescer>(cfg.coalescer, cfg.upstream.max_response_bytes, registry);
+  CacheWriter writer(store, cfg.cache.writer_queue_capacity, registry);
+  const CacheServices cache{&store, embedder.get(), embed_pool.get(), &writer, coalescer.get()};
 
   std::unique_ptr<ProxyServer> server;
   try {
@@ -119,7 +126,7 @@ int main(int argc, char** argv) {
   // The sweeper runs on its own strand so the shutdown cancel below is delivered on its executor.
   auto sweep_strand = net::make_strand(ioc);
   net::cancellation_signal sweep_cancel;
-  net::co_spawn(sweep_strand, sweep_expired(store, cfg.cache.sweep_interval, stopping),
+  net::co_spawn(sweep_strand, sweep_expired(writer, cfg.cache.sweep_interval, stopping),
                 net::bind_cancellation_slot(sweep_cancel.slot(), net::detached));
 
   // Graceful shutdown: stop accepting, cancel live sessions, wait for them to drain (bounded by
@@ -146,6 +153,7 @@ int main(int argc, char** argv) {
   for (int i = 1; i < threads; ++i) pool.emplace_back([&ioc] { ioc.run(); });
   ioc.run();
   for (auto& t : pool) t.join();
+  writer.stop();  // applies inserts still queued (persisted from Phase 6)
   log::info("stopped");
   // If the drain timed out, abandoned coroutine frames are destroyed with `ioc` after `server`;
   // exit without unwinding so they never touch freed state.

@@ -11,6 +11,8 @@
 
 #include "auth/tenants.hpp"
 #include "cache/cache_store.hpp"
+#include "cache/cache_writer.hpp"
+#include "coalesce/coalescer.hpp"
 #include "common/worker_pool.hpp"
 #include "config/config.hpp"
 #include "embed/embedder.hpp"
@@ -21,11 +23,14 @@
 namespace semcache {
 
 // Cache-side collaborators. Any may be null: no store => every request is BYPASS; no embedder or
-// pool => exact-match caching only (design §8, "embedder not loaded").
+// pool => exact-match caching only (design §8, "embedder not loaded"); no writer => inserts are
+// applied synchronously; no coalescer => duplicates are served independently.
 struct CacheServices {
   CacheStore* store = nullptr;
   Embedder* embedder = nullptr;
   WorkerPool* embed_pool = nullptr;
+  CacheWriter* writer = nullptr;
+  Coalescer* coalescer = nullptr;
 };
 
 struct PipelineOutcome {
@@ -33,7 +38,7 @@ struct PipelineOutcome {
   unsigned status = 0;
   std::optional<float> similarity;  // HIT: matched score; MISS: best score found, if a search ran
   std::string bypass_reason;        // why the request was BYPASS
-  std::string store;                // MISS: "stored" or why not
+  std::string store;                // MISS: "queued"/"stored", or why not
   UpstreamError upstream_error = UpstreamError::none;
   double upstream_ms = 0;
   bool streamed = false;
@@ -52,12 +57,15 @@ class RequestPipeline {
  private:
   struct Lookup;  // result of the cache lookup stage
 
-  Task<Lookup> lookup(const CacheableRequest& req);
+  // Embedding + nearest neighbour (the exact lookup happens before coalescing).
+  Task<Lookup> semantic_lookup(const CacheableRequest& req);
   Task<void> serve_hit(const CacheEntry& entry, float similarity, const nlohmann::json& request, ResponseWriter& out,
                        Clock::time_point received, PipelineOutcome& outcome);
-  // Forwards upstream. When `store_as` is set, a cacheable response is stored under it.
+  // Forwards upstream. When `store_as` is set, a cacheable response is stored under it, and
+  // `after_insert` runs once the writer has applied (or failed) that insert.
   Task<void> forward(std::string body, CacheResult result, std::optional<NewEntry> store_as, ResponseWriter& out,
-                     Clock::time_point received, PipelineOutcome& outcome);
+                     Clock::time_point received, PipelineOutcome& outcome,
+                     CacheWriter::AfterInsert after_insert = {});
 
   const Config& cfg_;
   Upstream& upstream_;

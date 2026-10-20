@@ -65,6 +65,9 @@ inline std::uint16_t closed_port() {
   return p;
 }
 
+struct ClientResponse;
+struct ClientRequest;
+
 // Which embedder the proxy gets: a deterministic fake, none (model failed to load), or one the
 // test passes in (e.g. the real OnnxEmbedder).
 enum class WithEmbedder { fake, none, custom };
@@ -82,9 +85,13 @@ class TestEnv {
     finalize_config(cfg_);
     upstream_ = std::make_unique<HttpUpstream>(cfg_.upstream, tls_);
     store_ = std::make_unique<CacheStore>(cfg_.cache, cfg_.tenants, registry_);
+    if (cfg_.coalescer.enabled) {
+      coalescer_ = std::make_unique<Coalescer>(cfg_.coalescer, cfg_.upstream.max_response_bytes, registry_);
+    }
+    writer_ = std::make_unique<CacheWriter>(*store_, cfg_.cache.writer_queue_capacity, registry_);
     Embedder* e = embedder == WithEmbedder::fake ? &embedder_ : embedder == WithEmbedder::custom ? custom : nullptr;
     if (e != nullptr) pool_ = std::make_unique<WorkerPool>("test-embed", cfg_.embedder.threads, cfg_.embedder.queue_capacity);
-    proxy_ = std::make_unique<ProxyServer>(ioc_, cfg_, *upstream_, CacheServices{store_.get(), e, pool_.get()},
+    proxy_ = std::make_unique<ProxyServer>(ioc_, cfg_, *upstream_, CacheServices{store_.get(), e, pool_.get(), writer_.get(), coalescer_.get()},
                                            registry_);
     proxy_->start();
     for (int i = 0; i < 2; ++i) threads_.emplace_back([this] { ioc_.run(); });
@@ -101,6 +108,7 @@ class TestEnv {
     const bool drained = proxy_->active_sessions() + mock_->active_sessions() == 0;
     embedder_.set_gate(false);
     if (pool_) pool_->stop();
+    writer_->stop();
     work_.reset();
     if (!drained) ioc_.stop();
     for (auto& t : threads_) t.join();
@@ -115,6 +123,14 @@ class TestEnv {
   [[nodiscard]] const Config& config() const { return cfg_; }
   [[nodiscard]] FakeEmbedder& fake_embedder() { return embedder_; }
   [[nodiscard]] CacheStore& store() { return *store_; }
+  [[nodiscard]] Coalescer* coalescer() { return coalescer_.get(); }
+  [[nodiscard]] CacheWriter& writer() { return *writer_; }
+  // Waits until every cache insert submitted so far is applied (inserts are asynchronous).
+  void flush() { writer_->flush(); }
+
+  // Request helpers that also flush, so a following request sees the stored entry.
+  ClientResponse chat(const std::string& prompt, bool stream = false, nlohmann::json extra = nlohmann::json::object());
+  ClientResponse request(ClientRequest r);
   [[nodiscard]] std::string metrics() const { return registry_.render_prometheus(); }
 
  private:
@@ -127,6 +143,8 @@ class TestEnv {
   std::unique_ptr<mock::MockUpstream> mock_;
   std::unique_ptr<HttpUpstream> upstream_;
   std::unique_ptr<CacheStore> store_;
+  std::unique_ptr<Coalescer> coalescer_;  // before writer_: outlives its after-insert callbacks
+  std::unique_ptr<CacheWriter> writer_;
   std::unique_ptr<WorkerPool> pool_;
   std::unique_ptr<ProxyServer> proxy_;
   std::vector<std::thread> threads_;
@@ -250,6 +268,18 @@ inline std::string assembled_content(const std::vector<nlohmann::json>& events) 
     }
   }
   return out;
+}
+
+inline ClientResponse TestEnv::chat(const std::string& prompt, bool stream, nlohmann::json extra) {
+  auto r = test::chat(port(), prompt, stream, std::move(extra));
+  flush();
+  return r;
+}
+
+inline ClientResponse TestEnv::request(ClientRequest r) {
+  auto res = test::request(port(), std::move(r));
+  flush();
+  return res;
 }
 
 }  // namespace semcache::test

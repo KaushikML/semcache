@@ -65,14 +65,14 @@ class ForwardSink final : public UpstreamSink {
     auto headers = headers_now();
     headers.insert(headers.end(), head.passthrough_headers.begin(), head.passthrough_headers.end());
     client_ok_ = co_await out_.begin_stream(head.status, head.content_type, headers);
-    co_return client_ok_;
+    co_return keep_reading();
   }
 
   Task<bool> on_body(std::string_view chunk) override {
     if (streaming_) {
       if (assembler_) assembler_->feed(chunk);
       client_ok_ = co_await out_.write_chunk(chunk);
-      co_return client_ok_;
+      co_return keep_reading();
     }
     if (body_.size() + chunk.size() > cfg_.max_response_bytes) {
       too_large_ = true;
@@ -93,6 +93,10 @@ class ForwardSink final : public UpstreamSink {
   const std::optional<StreamAssembler>& assembler() const { return assembler_; }
 
  private:
+  // A response being captured for the cache is read to the end even if the client left (design
+  // §8), bounded by upstream.total_timeout; otherwise the upstream call is cancelled.
+  bool keep_reading() const { return client_ok_ || (assembler_ && !assembler_->overflowed()); }
+
   ResponseWriter& out_;
   const UpstreamConfig& cfg_;
   CacheResult result_;
@@ -137,22 +141,9 @@ struct RequestPipeline::Lookup {
 RequestPipeline::RequestPipeline(const Config& cfg, Upstream& upstream, ProxyMetrics& metrics, CacheServices cache)
     : cfg_(cfg), upstream_(upstream), metrics_(metrics), cache_(cache) {}
 
-Task<RequestPipeline::Lookup> RequestPipeline::lookup(const CacheableRequest& req) {
+Task<RequestPipeline::Lookup> RequestPipeline::semantic_lookup(const CacheableRequest& req) {
   Lookup out;
   const auto now = CacheClock::now();
-  try {
-    if (auto e = cache_.store->exact_lookup(req.context, req.prompt_hash, now)) {
-      out.kind = Lookup::Kind::hit;
-      out.entry = std::move(e);
-      out.similarity = 1.0f;
-      co_return out;
-    }
-  } catch (const std::exception&) {
-    metrics_.internal_errors.inc();
-    out.kind = Lookup::Kind::bypass;
-    out.bypass_reason = "cache_error";
-    co_return out;
-  }
   if (cache_.embedder == nullptr || cache_.embed_pool == nullptr) co_return out;  // exact-only mode
 
   struct EmbedSearch {
@@ -242,27 +233,82 @@ Task<PipelineOutcome> RequestPipeline::handle_chat(const Tenant& tenant, std::st
     co_return outcome;
   }
 
-  auto lk = co_await lookup(*cls.request);
+  // 1. Exact fast path: no embedding, no coalescing needed.
+  const auto& req = *cls.request;
+  try {
+    if (auto e = cache_.store->exact_lookup(req.context, req.prompt_hash, CacheClock::now())) {
+      co_await serve_hit(*e, 1.0f, request, out, received, outcome);
+      if (outcome.result == CacheResult::hit) co_return outcome;
+    }
+  } catch (const std::exception&) {
+    metrics_.internal_errors.inc();
+  }
+
+  // 2. Coalescing on the exact flight key, before any CPU work (ADR-009).
+  const FlightKey key{req.context, req.prompt_hash, wants_stream(request), wants_usage(request)};
+  std::optional<LeaderWriter> leader;
+  struct LeaderGuard {  // completes the flight on every exit path, including cancellation
+    Coalescer* coalescer = nullptr;
+    FlightKey key;
+    FlightPtr flight;
+    bool retire_on_insert = false;
+    ~LeaderGuard() {
+      if (!flight) return;
+      flight->abort();  // no-op if the response was recorded completely
+      if (!retire_on_insert) coalescer->retire(key, flight);
+    }
+  } guard;
+  if (cache_.coalescer != nullptr) {
+    auto join = cache_.coalescer->join(key);
+    if (!join.leader) {
+      auto follow_headers = [&] { return semcache_headers(CacheResult::coalesced, received, std::nullopt); };
+      auto fr = co_await follow(join.flight, cache_.coalescer->max_followers(), out, follow_headers);
+      if (fr.served) {
+        outcome.result = CacheResult::coalesced;
+        outcome.status = fr.status;
+        outcome.streamed = fr.streamed;
+        outcome.keep_alive = fr.keep_alive;
+        co_return outcome;
+      }
+      metrics_.coalesce_independent.inc();  // too many followers, or the leader vanished: serve alone
+    } else {
+      guard.coalescer = cache_.coalescer;  // fields, not a temporary: its destructor would retire the flight
+      guard.key = key;
+      guard.flight = join.flight;
+      leader.emplace(out, join.flight);
+    }
+  }
+  ResponseWriter& w = leader ? static_cast<ResponseWriter&>(*leader) : out;
+
+  // 3. Semantic lookup on the embed pool.
+  auto lk = co_await semantic_lookup(req);
   if (lk.kind == Lookup::Kind::hit) {
-    co_await serve_hit(*lk.entry, lk.similarity, request, out, received, outcome);
+    co_await serve_hit(*lk.entry, lk.similarity, request, w, received, outcome);
     if (outcome.result == CacheResult::hit) co_return outcome;
     lk.kind = Lookup::Kind::bypass;  // rendering the stored entry failed before anything was sent
     lk.bypass_reason = "cache_error";
   }
   if (lk.kind == Lookup::Kind::bypass) {
     outcome.bypass_reason = lk.bypass_reason;
-    co_await forward(std::move(body), CacheResult::bypass, std::nullopt, out, received, outcome);
+    co_await forward(std::move(body), CacheResult::bypass, std::nullopt, w, received, outcome);
     co_return outcome;
   }
 
+  // 4. MISS: forward, then store. A leader's flight stays joinable until the insert is applied,
+  // so duplicates arriving in between replay it instead of calling upstream again.
   outcome.similarity = lk.best;
   NewEntry entry;
-  entry.context = cls.request->context;
-  entry.prompt_hash = cls.request->prompt_hash;
+  entry.context = req.context;
+  entry.prompt_hash = req.prompt_hash;
   entry.tenant = tenant.id;
-  entry.prompt = std::move(cls.request->embed_text);
+  entry.prompt = req.embed_text;
   entry.embedding = lk.embedding;
-  co_await forward(std::move(body), CacheResult::miss, std::move(entry), out, received, outcome);
+  CacheWriter::AfterInsert after_insert;
+  if (guard.flight) {
+    after_insert = [c = guard.coalescer, key, f = guard.flight](InsertOutcome) { c->retire(key, f); };
+  }
+  co_await forward(std::move(body), CacheResult::miss, std::move(entry), w, received, outcome, std::move(after_insert));
+  guard.retire_on_insert = outcome.store == "queued";
   co_return outcome;
 }
 
@@ -319,7 +365,8 @@ Task<void> RequestPipeline::serve_hit(const CacheEntry& entry, float similarity,
 }
 
 Task<void> RequestPipeline::forward(std::string body, CacheResult result, std::optional<NewEntry> store_as,
-                                    ResponseWriter& out, Clock::time_point received, PipelineOutcome& outcome) {
+                                    ResponseWriter& out, Clock::time_point received, PipelineOutcome& outcome,
+                                    CacheWriter::AfterInsert after_insert) {
   outcome.result = result;
   ForwardSink sink(out, cfg_.upstream, result, received, outcome.similarity, store_as.has_value());
   UpstreamRequest req{.target = "/v1/chat/completions", .body = std::move(body)};
@@ -336,8 +383,14 @@ Task<void> RequestPipeline::forward(std::string body, CacheResult result, std::o
 
   if (!sink.client_ok()) {
     metrics_.client_disconnects.inc();
-    outcome.status = sink.head().status;
     outcome.keep_alive = false;
+  }
+  if (r.error == UpstreamError::aborted && !sink.too_large()) {  // client gone and nothing to store
+    outcome.status = sink.head().status;
+    if (store_as) {
+      outcome.store = "client_gone";
+      metrics_.store_skipped("client_gone").inc();
+    }
     co_return;
   }
 
@@ -353,7 +406,7 @@ Task<void> RequestPipeline::forward(std::string body, CacheResult result, std::o
   if (sink.streaming()) {
     outcome.status = sink.head().status;
     if (r.error == UpstreamError::none) {
-      outcome.keep_alive = co_await out.end_stream();
+      outcome.keep_alive = co_await out.end_stream() && outcome.keep_alive;
       if (store_as && outcome.status == 200) {
         completion = sink.assembler()->completion();
         if (!completion) skip(sink.assembler()->overflowed() ? "too_large" : "incomplete");
@@ -380,7 +433,7 @@ Task<void> RequestPipeline::forward(std::string body, CacheResult result, std::o
     auto headers = sink.headers_now();
     headers.insert(headers.end(), sink.head().passthrough_headers.begin(), sink.head().passthrough_headers.end());
     auto ct = sink.head().content_type.empty() ? std::string(kJson) : sink.head().content_type;
-    outcome.keep_alive = co_await out.send(outcome.status, ct, sink.take_body(), headers);
+    outcome.keep_alive = co_await out.send(outcome.status, ct, sink.take_body(), headers) && outcome.keep_alive;
   } else {
     // Nothing sent to the client yet: map the failure to a gateway error.
     std::string message;
@@ -416,9 +469,12 @@ Task<void> RequestPipeline::forward(std::string body, CacheResult result, std::o
   }
   store_as->response = std::move(storable->json);
   store_as->total_tokens = storable->total_tokens;
+  if (cache_.writer != nullptr) {
+    // The writer thread applies it asynchronously (design §7.1).
+    outcome.store = cache_.writer->submit_insert(std::move(*store_as), std::move(after_insert)) ? "queued" : "dropped";
+    co_return;
+  }
   try {
-    // Phase 3: synchronous insert under the writer mutex (short, no I/O). Phase 4 moves it to the
-    // writer thread.
     auto res = cache_.store->insert(std::move(*store_as), CacheClock::now());
     outcome.store = res == InsertOutcome::stored ? "stored" : "too_large";
   } catch (const std::exception&) {

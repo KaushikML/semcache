@@ -12,6 +12,8 @@ endif()
 add_executable(semcache_unit_tests
   unit/config_test.cpp
   unit/cache_store_test.cpp
+  unit/cache_writer_test.cpp
+  unit/coalescer_test.cpp
   unit/completion_codec_test.cpp
   unit/context_key_test.cpp
   unit/simd_test.cpp
@@ -38,6 +40,7 @@ add_executable(semcache_integration_tests
   integration/streaming_test.cpp
   integration/failure_test.cpp
   integration/cache_test.cpp
+  integration/herd_test.cpp
   integration/semantic_model_test.cpp
 )
 target_include_directories(semcache_integration_tests PRIVATE .)
