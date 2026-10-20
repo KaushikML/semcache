@@ -46,6 +46,11 @@ store_finish_reasons = ["stop", "tool_calls"]   # "length" (truncated) answers a
 restream_chunk_chars = 16          # re-streamed HIT chunk size
 restream_delay_ms = 0              # pause between re-streamed chunks
 sweep_interval_ms = 60000          # active TTL expiry
+writer_queue_capacity = 4096       # pending inserts for the writer thread; full => insert dropped
+
+[coalescer]
+enabled = true                     # identical in-flight requests share one upstream call
+max_waiters_per_flight = 1000      # beyond this, duplicates are served independently
 
 [limits]
 rps = 50                           # per-tenant token bucket

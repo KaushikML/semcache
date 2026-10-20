@@ -76,6 +76,12 @@ struct CacheConfig {
   std::size_t restream_chunk_chars = 16;  // re-streamed HIT chunk size (§6.5)
   Millis restream_delay{0};               // pause between re-streamed chunks
   Millis sweep_interval{60'000};          // active TTL expiry
+  std::size_t writer_queue_capacity = 4096;  // pending inserts; when full, inserts are dropped (§7.4)
+};
+
+struct CoalescerConfig {
+  bool enabled = true;
+  std::size_t max_waiters_per_flight = 1000;  // beyond this, a duplicate is served independently
 };
 
 struct LimitsConfig {
@@ -102,6 +108,7 @@ struct Config {
   UpstreamConfig upstream;
   EmbedderConfig embedder;
   CacheConfig cache;
+  CoalescerConfig coalescer;
   LimitsConfig limits;
   LoggingConfig logging;
   std::vector<TenantConfig> tenants;

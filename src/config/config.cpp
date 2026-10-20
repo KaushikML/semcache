@@ -281,6 +281,8 @@ void finalize_config(Config& cfg) {
   if (c.restream_chunk_chars == 0) throw ConfigError("cache.restream_chunk_chars must be > 0");
   if (c.restream_delay.count() < 0) throw ConfigError("cache.restream_delay_ms must be >= 0");
   if (c.sweep_interval.count() <= 0) throw ConfigError("cache.sweep_interval_ms must be > 0");
+  if (c.writer_queue_capacity == 0) throw ConfigError("cache.writer_queue_capacity must be > 0");
+  if (cfg.coalescer.max_waiters_per_flight == 0) throw ConfigError("coalescer.max_waiters_per_flight must be > 0");
 
   if (cfg.limits.rps <= 0 || cfg.limits.burst < 1) {
     throw ConfigError("limits.rps must be > 0 and limits.burst >= 1");
@@ -358,6 +360,10 @@ Config load_config_from_string(std::string_view toml_text, const EnvLookup& env)
   r.read("cache", "restream_chunk_chars", c.restream_chunk_chars);
   r.read("cache", "restream_delay_ms", c.restream_delay);
   r.read("cache", "sweep_interval_ms", c.sweep_interval);
+  r.read("cache", "writer_queue_capacity", c.writer_queue_capacity);
+
+  r.read("coalescer", "enabled", cfg.coalescer.enabled);
+  r.read("coalescer", "max_waiters_per_flight", cfg.coalescer.max_waiters_per_flight);
 
   r.read("limits", "rps", cfg.limits.rps);
   r.read("limits", "burst", cfg.limits.burst);
