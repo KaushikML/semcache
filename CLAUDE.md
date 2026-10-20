@@ -67,11 +67,15 @@ Source of truth for design: `docs/design.md`. Decisions: `docs/adr/`.
 - Phase 2 (embedding): done. Own WordPiece (char classes generated from HF), `OnnxEmbedder`
   (ORT 1.20.1, model pinned, ADR-011). Min cosine 0.9999994 vs sentence-transformers. Embed latency
   on the dev laptop is far over the 10 ms HIT budget for long prompts; re-measure on target hardware.
-- **Phase 3 (cache v1): implemented, awaiting review.** Context key (denylist of transport fields,
-  ADR-002 notes), AVX2/scalar dot, `VectorIndex` + `BruteForceIndex`, `CacheStore` (partitions,
-  exact fast path, TTL, CLOCK under global budget + per-tenant quota), bounded `WorkerPool` as
-  embed pool, SSE assembly/re-stream, HIT/MISS/BYPASS headers, metrics, `/stats`.
-  Interim: mutations synchronous under writer mutex W (design §7.3); Phase 4 adds the writer
-  thread and coalescing. Brute force meets the 2 ms lookup budget to ~15K vectors/partition.
+- Phase 3 (cache v1): done. Context key (denylist of transport fields), AVX2/scalar dot,
+  `BruteForceIndex`, `CacheStore` (partitions, exact fast path, TTL, CLOCK, quotas), embed pool,
+  SSE assembly/re-stream, headers, metrics, `/stats`. Brute force meets 2 ms to ~15K vectors.
+- **Phase 4 (coalescing + concurrency): implemented, awaiting review.** `CacheWriter` = single writer
+  thread (bounded queue; TTL sweeps go through it). `Coalescer`: flight key = context + prompt hash +
+  stream flags; leader serves through `LeaderWriter` (records what its client gets), followers
+  replay live (`X-Semcache: COALESCED`); leader errors shared; leader vanishing before a head =>
+  followers fail open; flight retired only after the insert is applied. Near-duplicate coalescing
+  not implemented (ADR-009 notes). Tests: herd (50 → 1 upstream call), streaming live, failures,
+  caps, mixed-traffic stress; 174 green on debug/asan/tsan. Coroutines take parameters by value.
   Deferred: tags/purge (Phase 6), `/stats/stream` + recent-requests ring (Phase 8).
 - Python tooling: `python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt`.

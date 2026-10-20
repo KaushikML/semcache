@@ -357,11 +357,14 @@ shared lock and release the lock before any I/O.
 
 TSan runs on the full integration suite in CI (Phase 4 gate).
 
-**Phase 3 interim (until the writer thread lands in Phase 4):** mutations run synchronously on
-the calling thread (I/O thread for inserts, sweeper timer for expiry), serialized by a writer
-mutex **W** taken *before* L2/L3 (order W → L2 → L3). Readers never take W. Each insert holds W
-for an index append plus O(evicted) work, with no I/O. This keeps the store TSan-clean now; the
-writer queue makes inserts asynchronous and moves them off I/O threads.
+**As implemented (Phase 4):** `CacheWriter` is the single writer thread. Inserts (from I/O
+threads after a MISS) and TTL sweeps (from the sweeper timer) are submitted to its bounded queue
+(`cache.writer_queue_capacity`; full → insert dropped, `semcache_store_dropped_total`). Inside
+`CacheStore`, mutations still take a writer mutex **W** before L2/L3 (order W → L2 → L3). It is
+uncontended in production, where only the writer thread mutates, and keeps direct calls from tests
+safe. Readers never take W. The coalescer adds **L1** (flight map) and **L1b** (one flight); a
+follower's wakeup is a capacity-1 `concurrent_channel`, signalled after L1b is released, so no
+wakeup is lost and no lock is held while notifying.
 
 ### 7.4 Backpressure
 
