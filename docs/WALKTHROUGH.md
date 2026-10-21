@@ -1,12 +1,12 @@
-# semcache — complete walkthrough (Phases 0–3)
+# semcache — complete walkthrough (Phases 0–5)
 
 This document explains everything built so far: the idea, the design, every file, every library,
 the C++ techniques used, how a request flows through the code, how concurrency and failures are
 handled, how it is tested, and what was measured. Read it top to bottom once; afterwards use the
 file map (§4) as an index.
 
-Status at time of writing: Phases 0, 1, 2 done; Phase 3 implemented and awaiting review.
-148 automated tests pass in debug, AddressSanitizer/UBSan and ThreadSanitizer builds.
+Status at time of writing: Phases 0–4 done; Phase 5 (HNSW) implemented and awaiting review.
+198 automated tests pass in debug, AddressSanitizer/UBSan and ThreadSanitizer builds.
 
 ---
 
@@ -23,15 +23,17 @@ Status at time of writing: Phases 0, 1, 2 done; Phase 3 implemented and awaiting
 9. [Phase 1 — the walking skeleton (proxy + mock)](#9-phase-1--the-walking-skeleton-proxy--mock)
 10. [Phase 2 — the embedder (tokenizer + ONNX model)](#10-phase-2--the-embedder-tokenizer--onnx-model)
 11. [Phase 3 — the cache](#11-phase-3--the-cache)
-12. [Concurrency model as implemented](#12-concurrency-model-as-implemented)
-13. [Failure handling: "fail open"](#13-failure-handling-fail-open)
-14. [Configuration reference](#14-configuration-reference)
-15. [Observability: logs, metrics, endpoints](#15-observability-logs-metrics-endpoints)
-16. [Testing: how we know it works](#16-testing-how-we-know-it-works)
-17. [Measurements so far](#17-measurements-so-far)
-18. [Known weaknesses and what comes next](#18-known-weaknesses-and-what-comes-next)
-19. [How to build, run and test](#19-how-to-build-run-and-test)
-20. [Glossary](#20-glossary)
+12. [Phase 4 — coalescing and the writer thread](#12-phase-4--coalescing-and-the-writer-thread)
+13. [Phase 5 — the HNSW index](#13-phase-5--the-hnsw-index)
+14. [Concurrency model as implemented](#14-concurrency-model-as-implemented)
+15. [Failure handling: "fail open"](#15-failure-handling-fail-open)
+16. [Configuration reference](#16-configuration-reference)
+17. [Observability: logs, metrics, endpoints](#17-observability-logs-metrics-endpoints)
+18. [Testing: how we know it works](#18-testing-how-we-know-it-works)
+19. [Measurements so far](#19-measurements-so-far)
+20. [Known weaknesses and what comes next](#20-known-weaknesses-and-what-comes-next)
+21. [How to build, run and test](#21-how-to-build-run-and-test)
+22. [Glossary](#22-glossary)
 
 ---
 
@@ -50,8 +52,8 @@ only its `base_url` to point at semcache. semcache speaks exactly the same API a
 - **MISS** — forward to the real API, return its answer to the client, and store it for next time.
 - **BYPASS** — this request must not be cached (e.g. the client asked for 2 answers, or the cache
   layer itself had a problem); forward it untouched and store nothing.
-- **COALESCED** — (Phase 4, not yet built) several identical requests arrive at once; send one
-  upstream call and share the answer.
+- **COALESCED** — several identical requests arrive at once; only the first goes upstream and the
+  others receive the same answer, live, as it is produced (Phase 4).
 
 The client sees which one happened in the response header `X-Semcache`.
 
@@ -109,15 +111,21 @@ Client ──HTTP──► ProxyServer (src/proxy/proxy_server.cpp)
                    │     yes → context key + prompt hash + embed text
                    │  CacheStore::exact_lookup(context, prompt hash)
                    │     found → HIT (similarity 1.0)
-                   │  else, on an embed-pool thread (src/common/worker_pool.hpp):
+                   │  Coalescer::join(flight key) (src/coalesce/coalescer.cpp)
+                   │     an identical request is already in flight → FOLLOWER:
+                   │        replay the leader's response as it arrives → COALESCED
+                   │     otherwise → LEADER: everything below is recorded for followers
+                   │  on an embed-pool thread (src/common/worker_pool.hpp):
                    │     OnnxEmbedder::embed(text) → 384-d vector
                    │     CacheStore::nearest(context, vector) → best entry + cosine
+                   │        (brute force or HNSW, chosen per partition: src/index/)
                    │     cosine ≥ threshold → HIT
                    │     otherwise            → MISS (remember the vector)
                    ▼
    HIT:  serve_hit  — stored answer with a fresh id/created; JSON, or re-streamed as SSE
    MISS: forward    — HttpUpstream sends the request; the response is relayed to the client
-                      while being captured; if cacheable, CacheStore::insert stores it
+                      while being captured; if cacheable it is queued to the writer thread
+                      (src/cache/cache_writer.cpp), which inserts it into the CacheStore
                    ▼
                  ProxyServer logs one JSON line, updates metrics
 ```
@@ -200,10 +208,13 @@ cache can only ever remove work, never break a request.
 | `embed/onnx_embedder.{hpp,cpp}` | Embedder | Runs the model with ONNX Runtime, mean-pools and L2-normalizes; refuses texts over 256 tokens. |
 | `cache/context_key.{hpp,cpp}` | ContextKeyBuilder | Decides cacheable vs bypass; builds the context key, prompt hash and embed text; canonical JSON. |
 | `cache/cache_store.{hpp,cpp}` | CacheStore | Entries partitioned by context key; exact lookup; nearest-neighbour lookup; insert; TTL; CLOCK eviction under byte budgets; metrics. |
+| `cache/cache_writer.{hpp,cpp}` | CacheStore | The single writer thread: all inserts and TTL sweeps go through its bounded queue, applied in order. |
+| `coalesce/coalescer.{hpp,cpp}` | Coalescer | Flight map, per-flight response log, `LeaderWriter` (records what the leader's client receives), `follow()` (replays it to followers). |
 | `cache/completion_codec.{hpp,cpp}` | CacheStore helpers | Reassembles streamed responses into one JSON; decides if a response may be stored; renders HITs as JSON or SSE. |
 | `index/vector_index.hpp` | VectorIndex | Interface: `add`, `remove`, `search(q, k)`. |
 | `index/simd.{hpp,cpp}` | VectorIndex | Dot-product kernels: scalar and AVX2+FMA; runtime CPU detection. |
 | `index/brute_force_index.{hpp,cpp}` | VectorIndex | Exact search over one contiguous float buffer. |
+| `index/hnsw_index.{hpp,cpp}` | VectorIndex | Approximate search over a layered proximity graph (HNSW); tombstone deletes. |
 | `proxy/proxy_metrics.hpp` | Metrics | Every metric the proxy exports, registered once. `CacheResult` enum (HIT/MISS/COALESCED/BYPASS). |
 | `proxy/proxy_server.{hpp,cpp}` | Http | Connection loop, routing, auth, rate limit, in-flight limit, `/healthz`, `/readyz`, `/stats`, `/metrics`, request log line. |
 | `proxy/pipeline.{hpp,cpp}` | RequestPipeline | The only place that composes all modules for one chat request: classify → lookup → HIT / MISS / BYPASS. |
@@ -229,8 +240,9 @@ cache can only ever remove work, never break a request.
 |---|---|
 | `embed_bench.cpp` | Google Benchmark: tokenizer speed, single embeds at 16–256 tokens, batching, 1–8 concurrent threads. |
 | `index_bench.cpp` | Google Benchmark: dot product scalar vs AVX2; brute-force search at 1K–100K vectors. |
+| `hnsw_eval.cpp` | Brute force vs HNSW per partition size: recall@10, p50/p99 latency for several `ef`, build time, memory. |
 | `run_embed_bench.sh` | Runs the embed benchmark, saves JSON plus machine details. |
-| `results/phase2/`, `results/phase3/` | Raw JSON results, machine info, and a README with the tables and takeaways. |
+| `results/phase2/`, `phase3/`, `phase5/` | Raw JSON results, machine info, and a README with the tables and takeaways. |
 
 ### `tests/`
 
@@ -239,9 +251,10 @@ cache can only ever remove work, never break a request.
 | `CMakeLists.txt` | Builds `semcache_unit_tests` and `semcache_integration_tests`, registers each test with CTest, sets sanitizer options. |
 | `support/test_env.hpp` | In-process harness: starts a mock upstream + proxy on random ports, a small async HTTP client, helpers (`chat`, `sse_events`, …). |
 | `support/fake_embedder.hpp` | Deterministic fake embedder (aliases at exact cosine, forced errors, a gate to block). |
+| `support/recording_writer.hpp` | A `ResponseWriter` that just records calls, for coalescer tests without sockets. |
 | `support/model_paths.hpp` | Paths to the real model and golden files. |
 | `sanitizers/lsan.supp`, `tsan.supp` | Narrow suppressions for noise from inside the prebuilt ONNX Runtime library. |
-| `unit/*.cpp`, `integration/*.cpp` | The tests (§16). |
+| `unit/*.cpp`, `integration/*.cpp` | The tests (§18). |
 | `data/` | Golden files generated by the Python tools. |
 
 ---
@@ -322,6 +335,16 @@ searches run concurrently under a *shared* lock, a member variable would be a da
 `PoolResult` carry an error enum. Exceptions are only used inside modules and are caught at the
 boundary (fail open).
 
+**Coroutine parameters by value.** A coroutine keeps running after the expression that started it
+has finished, so a reference parameter can point at a temporary that no longer exists. The sanitizers
+caught exactly this in Phase 4 (`follow()` took a `const std::function&`); coroutines that can
+outlive their caller's arguments now take parameters by value or as `shared_ptr`.
+
+**`concurrent_channel` as a wakeup.** A coalescing follower waits on an Asio
+`experimental::concurrent_channel` with capacity 1: the leader `try_send`s after each new chunk. A
+wakeup sent while the follower is busy is kept in the channel, so none is ever lost; duplicates are
+dropped.
+
 **`[[nodiscard]]`, `-Werror`, strict warnings.** Ignoring a returned result or an implicit narrowing
 conversion is a compile error.
 
@@ -333,7 +356,7 @@ conversion is a compile error.
 - `semcache_core` (static library): everything in `src/` except `main.cpp`.
 - `semcache` (executable): `src/main.cpp` + core.
 - `semcache_mock` (static library) + `semcache-mock` (executable).
-- `semcache_bench_embed`, `semcache_bench_index` (benchmarks, option `SEMCACHE_BUILD_BENCH`).
+- `semcache_bench_embed`, `semcache_bench_index`, `semcache_hnsw_eval` (benchmarks, option `SEMCACHE_BUILD_BENCH`).
 - `semcache_unit_tests`, `semcache_integration_tests` (option `SEMCACHE_BUILD_TESTS`).
 
 **Presets (`CMakePresets.json`):** each preset builds into `build/<name>`:
@@ -791,24 +814,210 @@ Headers on every chat response: `X-Semcache` (HIT/MISS/BYPASS), `X-Semcache-Late
 response headers), `X-Semcache-Similarity` (HIT: matched score; MISS: best score found, if a search
 ran).
 
+(Phase 4 inserted coalescing between the exact lookup and the semantic lookup, and moved inserts
+to the writer thread — see §12.7.)
+
 ### 11.8 `/stats` and the sweeper
 
 `/stats` returns: requests by result, total, hit rate, tokens saved, in-flight, embedder ready,
 cache entries/bytes/max/partitions/threshold, and p50/p90/p99 for request, upstream, embed and
 lookup latency (estimated from histogram buckets). It never contains prompt or answer text.
 
-The sweeper coroutine in `main.cpp` wakes every `sweep_interval_ms` and calls `store.expire(now)`.
+The sweeper coroutine in `main.cpp` wakes every `sweep_interval_ms` and (since Phase 4) queues a
+TTL sweep to the writer thread, the only thread that mutates the store.
 
 ---
 
-## 12. Concurrency model as implemented
+## 12. Phase 4 — coalescing and the writer thread
+
+### 12.1 Why coalescing
+
+A cache only helps *after* the first answer is stored. A burst of identical requests (a page load
+fanning out, retries, many users asking the same thing at once) arrives before that, so every one
+of them would go upstream and pay full price. Coalescing makes them share one upstream call.
+
+### 12.2 The flight key
+
+A **flight** is one upstream call shared by several requests. Requests join the same flight if they
+have the same **flight key** = context key + prompt hash + `stream` + `stream_options.include_usage`.
+The two stream flags are included because followers receive the leader's *bytes* verbatim; a
+streamed and a non-streamed request need different response formats, so they get separate flights
+(they still share cache entries afterwards). Only cacheable requests coalesce; BYPASS never does.
+Coalescing is decided right after the exact lookup, *before* any embedding work.
+
+### 12.3 Leader and followers
+
+`Coalescer::join(key)` (one mutex-guarded hash map, lock **L1**):
+- **First request → leader.** It serves normally (semantic lookup, HIT or MISS…), but through a
+  `LeaderWriter` that wraps its real response writer. Every write — status and headers, the body,
+  each SSE chunk, the end — is also appended to the flight's log (`Flight`, lock **L1b**).
+  The leader's own `X-Semcache-*` headers are stripped from the log; everything else is shared.
+- **Later identical requests → followers.** `follow()` replays the log into the follower's own
+  connection: it writes what is already there, then waits for a wakeup, writes the new chunks, and
+  so on until the leader finishes. Followers therefore stream at the leader's pace. They get their
+  own headers: `X-Semcache: COALESCED` and their own latency.
+
+What followers see is *exactly* what the leader's client saw: a HIT, a MISS answer, a 502/504, or
+a stream that was interrupted — no retries, so a herd never becomes a retry storm.
+
+### 12.4 Failure cases
+
+| Situation | What happens |
+|---|---|
+| Leader cancelled / crashes before writing any response head | Followers serve the request themselves (fail open), counted in `semcache_coalesce_independent_total`. |
+| Leader dies mid-stream | Followers get the chunks so far, then an SSE error event, then the connection closes. |
+| Leader's own client disconnects | The upstream read continues while followers still need it (or while the response is being captured for the cache), bounded by the upstream total timeout. |
+| Too many followers (`coalescer.max_waiters_per_flight`) | Extra requests are served independently. |
+| Streamed log exceeds `upstream.max_response_bytes` | Followers get an error event; the leader carries on alone. |
+
+### 12.5 Flight lifetime and the "insert window"
+
+Inserts are asynchronous (next section), so there is a moment after the leader finished when the
+answer is not yet visible in the cache. A duplicate arriving then would miss and call upstream
+again. To close that window, a flight stays joinable until the writer thread has **applied** the
+leader's insert: the insert carries a callback that retires the flight. Late duplicates simply
+replay the finished flight.
+
+### 12.6 The writer thread (`CacheWriter`)
+
+Design §7 always called for a single writer. Phase 3 used a mutex as a stand-in; Phase 4 makes it
+real:
+- one thread named `cache-writer`, a bounded queue (`cache.writer_queue_capacity`, 4096);
+- jobs: `Insert{entry, after_callback}` and `Expire` (deduplicated while queued);
+- full queue → the insert is dropped and counted (`semcache_store_dropped_total`): the request was
+  already served, only a future HIT is lost;
+- the after-callback runs for every attempted insert, even if it failed — otherwise a flight could
+  stay open forever;
+- `flush()` waits until everything submitted so far is applied (used by tests and shutdown);
+  `stop()` applies what is queued, then exits.
+
+Request threads never take exclusive index locks any more; the mutation order is total (Phase 6
+will append it to a write-ahead log in that same order).
+
+### 12.7 The pipeline order now
+
+1. parse + classify (BYPASS if not cacheable)
+2. **exact lookup** → HIT (no coalescing needed: answering is instant)
+3. **join flight** → follower: replay → COALESCED; leader: continue through `LeaderWriter`
+4. **semantic lookup** on the embed pool → HIT (shared with followers) or MISS
+5. **forward** upstream, relay + capture, **queue the insert** with "retire flight" as its callback
+
+### 12.8 Tests and bugs found
+
+Herd tests (`tests/integration/herd_test.cpp`) start real clients against the proxy: 50 identical
+requests → **1 upstream call**, 1 MISS + 49 COALESCED, one identical body; streaming followers
+receive tokens live (headers long before the end); a leader 503 reaches all 20 clients with one
+upstream call; leader stream reset → every follower gets the error event; follower cap; tenants and
+BYPASS never coalesce; a semantic HIT is shared; the leader hanging up does not cancel the shared
+call; and a mixed-traffic stress test (duplicates, streams, constant eviction, TTL sweeps) for TSan.
+
+Mutation checks: making every request a leader fails 8 of 12 herd tests. Letting the leader stop
+when its client leaves was *not* caught by the integration test at first (the cache capture also
+kept the upstream call alive), so a test where the leader has nothing to store was added; it now
+catches it.
+
+Bugs caught on the way: a coroutine reference parameter that dangled (ASan + TSan, see §6); an
+oversized upstream response that hung instead of returning 502 (my regression, caught by the
+existing failure test); and, in CI, a TSan report caused by spdlog initializing lazily from two
+threads in a test (fixed by initializing logging before any thread starts, like `main` does).
+
+---
+
+## 13. Phase 5 — the HNSW index
+
+### 13.1 Why an approximate index
+
+Brute force compares the query with every vector in the partition: cost grows linearly. Most
+partitions are small, but one busy app with one system prompt puts everything in one partition.
+Measured in Phase 3, brute force passes the 2 ms lookup budget at around 10–15K vectors. HNSW
+(Hierarchical Navigable Small World, Malkov & Yashunin) finds the nearest neighbours by walking a
+graph, touching only a small fraction of the vectors — at the price of being *approximate*: it can
+occasionally miss the true best match. We measure how often (**recall**).
+
+### 13.2 How HNSW works (plain version)
+
+- Every vector is a node. Each node is linked to a few (M=16) nearby nodes, chosen so links point in
+  different directions — a "small world" where any node is a few hops from any other.
+- Nodes get a random **level**; level 0 contains everyone, level 1 about 1/16 of the nodes, level 2
+  about 1/256… Higher levels are sparse "highways".
+- **Search:** start at the top level's entry point, greedily hop to whichever neighbour is closer to
+  the query until no neighbour is closer; drop a level and repeat. On level 0, run a **beam search**
+  that keeps the best `ef_search` (64) candidates and expands them until nothing better is found.
+  Return the best k.
+- **Insert:** search for the new vector's neighbours the same way (with a wider beam,
+  `ef_construction` = 200), link it to M of them using the **neighbour-selection heuristic**
+  (skip a candidate if it is closer to an already-chosen neighbour than to the new node — this keeps
+  links diverse), and add the reverse links, pruning any list that grows beyond M (2M on level 0).
+
+### 13.3 Our implementation (`src/index/hnsw_index.cpp`)
+
+- Vectors in one contiguous array; links as per-node, per-level lists; external id ↔ node maps.
+- Scores use the same AVX2/scalar dot kernel as brute force.
+- **Deletes are tombstones:** the node stays in the graph (it still routes searches and may still be
+  linked to — removing it could disconnect the graph, e.g. if it is the entry point) but is never
+  returned. `wants_rebuild()` turns true when more than 25% of nodes are tombstones.
+- **Concurrent searches:** `search()` is const; the "visited" marks it needs live in a
+  `thread_local` array with a generation counter, so searches neither share state nor clear an O(n)
+  array every time.
+- **Reproducible:** the level generator is seeded (`index.hnsw_seed`), so the same inserts build the
+  same graph.
+
+A bug the shared index tests caught: re-adding an id tombstoned the only node (the entry point), and
+the new node, refusing to link to tombstones, ended up unreachable. Tombstones now stay eligible as
+neighbours, as in hnswlib.
+
+### 13.4 Brute force or HNSW, per partition
+
+`index.kind`: `brute`, `hnsw`, or **`auto`** (default): a partition starts with brute force (exact,
+cheap to update) and upgrades to HNSW when it reaches `index.hnsw_min_partition_size` vectors.
+
+Rebuilds (the upgrade, or too many tombstones) are done by the **writer thread** *outside* the
+partition lock: it is the only thread that changes partitions, so it can read the entries safely,
+build a fresh index, and then swap it in under a brief exclusive lock. Readers keep searching the
+old index meanwhile and never wait for a graph build. A tombstone rebuild of a partition that has
+shrunk below the threshold goes back to brute force.
+
+### 13.5 How it was evaluated (`bench/hnsw_eval.cpp`)
+
+For each size, 384-d unit vectors are drawn around cluster centres (≈ topics, closer to real
+sentence embeddings than uniform random vectors), brute force gives the true top-10 for 500
+queries, and HNSW is measured at several `ef` values. Results (dev laptop, single thread):
+
+| n | brute force p50 / p99 | HNSW ef=64 recall@10 | HNSW p50 / p99 | build |
+|---:|---:|---:|---:|---:|
+| 1,000 | 111 / 362 µs | 1.0000 | 68 / 137 µs | 0.27 s |
+| 5,000 | 410 / 1,350 µs | 1.0000 | 199 / 562 µs | 2.9 s |
+| 10,000 | 1,451 / 3,200 µs | 1.0000 | 224 / 690 µs | 8.2 s |
+| 20,000 | 3,240 / 15,178 µs | 1.0000 | 383 / 1,204 µs | 24.5 s |
+| 50,000 | 9,017 / 22,513 µs | 1.0000 | 889 / 2,352 µs | 100 s |
+
+Decision: `hnsw_min_partition_size = 5000` — the largest measured size where brute force's p99 is
+still inside the 2 ms budget, and HNSW is already 2× faster at the median. Costs: ~8% more memory,
+and a build time that grows faster than linearly (the one-off upgrade at 5K costs ~3 s of writer
+time, during which other inserts queue). The unit test gate is recall@10 ≥ 0.95 on 5K clustered
+64-d vectors (measured 0.9575).
+
+### 13.6 The knobs
+
+| Parameter | Default | Effect |
+|---|---|---|
+| `hnsw_m` | 16 | Links per node: higher = better recall, more memory, slower inserts. |
+| `hnsw_ef_construction` | 200 | Beam while inserting: graph quality vs build time. |
+| `hnsw_ef_search` | 64 | Beam while searching: recall vs latency (32 gave ≥ 0.9978 recall, ~2× faster). |
+| `hnsw_max_tombstone_ratio` | 0.25 | Rebuild threshold. |
+| `hnsw_min_partition_size` | 5000 | Auto switch point. |
+
+---
+
+## 14. Concurrency model as implemented
 
 **Threads:**
 
 | Threads | Count | Run | Never |
 |---|---|---|---|
-| I/O threads | `server.io_threads` (0 = all cores) | accept, parse, auth, rate limit, upstream I/O, writing responses, exact lookups, (Phase 3) inserts | model inference |
-| Embed pool | `embedder.threads` (4) | tokenize + ORT Run + vector search | network I/O |
+| I/O threads | `server.io_threads` (0 = all cores) | accept, parse, auth, rate limit, upstream I/O, writing responses, exact lookups, coalescing (leaders record, followers replay) | model inference, cache mutations |
+| Embed pool | `embedder.threads` (4) | tokenize + ORT Run + vector search (brute force or HNSW) | network I/O |
+| Writer | 1 (`cache-writer`) | every cache mutation: inserts, evictions, TTL sweeps, index upgrades/rebuilds | network I/O |
 | Main thread | 1 | setup, then also runs the io_context | — |
 
 **Shared state and protection:**
@@ -822,22 +1031,22 @@ The sweeper coroutine in `main.cpp` wakes every `sweep_interval_ms` and calls `s
 | Partition map | `shared_mutex` **L2** |
 | One partition (entries, exact map, index) | `shared_mutex` **L3** |
 | Entry `referenced` bit / hit count | atomics |
-| CLOCK ring, byte totals, mutations | writer mutex **W** |
-| Embed queue | mutex + condition variable |
+| CLOCK ring, byte totals, mutations | writer mutex **W** (uncontended: only the writer thread mutates) |
+| Coalescer flight map | mutex **L1** |
+| One flight (log, state, follower list) | mutex **L1b** |
+| Embed queue, writer queue | mutex + condition variable |
 | Listener session map | mutex |
 
-**Lock order: W → L2 → L3.** Readers never take W. At most one L3 at a time. No lock is held
-across network I/O or an ORT `Run`.
+**Lock order: W → L2 → L3**, and separately **L1 → L1b** (never held together with W/L2/L3).
+Readers never take W. At most one L3 at a time. No lock is held across network I/O, an ORT `Run`,
+an HNSW build (built off-lock, swapped under a brief L3), or while waking followers.
 
-**Phase 3 interim:** inserts run synchronously on the I/O thread under W (an append, no I/O).
-Phase 4 introduces a dedicated writer thread with a bounded queue, making inserts asynchronous.
-
-All of this runs clean under ThreadSanitizer, including a test with 4 reader threads and one
-writer hammering the store.
+All of this runs clean under ThreadSanitizer, including stores hammered by readers and the writer,
+readers during HNSW upgrades, concurrent HNSW searches, and the herd stress test.
 
 ---
 
-## 13. Failure handling: "fail open"
+## 15. Failure handling: "fail open"
 
 Rule: **if upstream could have served the request, the client gets upstream's answer.**
 
@@ -853,7 +1062,10 @@ Rule: **if upstream could have served the request, the client gets upstream's an
 | Upstream unreachable / reset before headers | — | 502 |
 | Upstream dies mid-stream | SSE error event, connection closed, nothing stored | truncated stream + error event |
 | Upstream response too large to buffer | — | 502 |
-| Client disconnects | Upstream call aborted, nothing stored | — |
+| Client disconnects | Upstream call continues if followers need it or it is being cached; otherwise aborted | — |
+| Coalescing leader fails upstream | Same error for every follower, one upstream call | leader's 5xx/502/504 |
+| Coalescing leader vanishes before responding | Followers serve themselves | normal response |
+| Writer queue full | Insert dropped (request already served) | — (`semcache_store_dropped_total`) |
 | Too many in-flight requests | The one place we fail closed | 503 + `Retry-After` |
 | Over rate limit | — | 429 + `Retry-After` |
 | Body too large | — | 413 |
@@ -862,7 +1074,7 @@ Rule: **if upstream could have served the request, the client gets upstream's an
 
 ---
 
-## 14. Configuration reference
+## 16. Configuration reference
 
 Sections (see `config/semcache.example.toml` for every key with comments):
 
@@ -872,7 +1084,11 @@ Sections (see `config/semcache.example.toml` for every key with comments):
 - `[embedder]`: model_path, vocab_path, max_tokens (256), intra_op_threads (1), threads (4), queue_capacity (1024)
 - `[cache]`: enabled, similarity_threshold (0.90), history_k (2), max_temperature (2.0),
   default_ttl_s (86400), max_bytes (1 GiB), max_response_bytes (64 KiB), store_finish_reasons,
-  restream_chunk_chars (16), restream_delay_ms (0), sweep_interval_ms (60000)
+  restream_chunk_chars (16), restream_delay_ms (0), sweep_interval_ms (60000),
+  writer_queue_capacity (4096)
+- `[index]`: kind (`auto` | `brute` | `hnsw`), hnsw_min_partition_size (5000), hnsw_m (16),
+  hnsw_ef_construction (200), hnsw_ef_search (64), hnsw_max_tombstone_ratio (0.25), hnsw_seed (42)
+- `[coalescer]`: enabled (true), max_waiters_per_flight (1000)
 - `[limits]`: rps (50), burst (100) per tenant
 - `[logging]`: level, log_prompts (false)
 - `[[tenants]]`: id, key_env, optional max_bytes, optional ttl_s
@@ -882,7 +1098,7 @@ Env override example: `SEMCACHE_CACHE__SIMILARITY_THRESHOLD=0.85`. Secrets:
 
 ---
 
-## 15. Observability: logs, metrics, endpoints
+## 17. Observability: logs, metrics, endpoints
 
 **Log line per request** (JSON): `ts, level, msg="request", req_id, tenant, status, cache,
 streamed, latency_ms, upstream_ms, upstream_error, bytes_in, [similarity], [bypass_reason],
@@ -900,14 +1116,18 @@ streamed, latency_ms, upstream_ms, upstream_error, bytes_in, [similarity], [bypa
   `semcache_cache_internal_errors_total`, `semcache_store_skipped_total{reason}`,
   `semcache_index_entries`, `semcache_index_bytes`, `semcache_partitions`,
   `semcache_evictions_total{reason}`, `semcache_embedder_ready`
+- coalescing / writer: `semcache_requests_total{result="COALESCED"}`, `semcache_flights_active`,
+  `semcache_coalesce_independent_total`, `semcache_writer_queue_depth`, `semcache_store_dropped_total`
+- index: `semcache_index_hnsw_partitions`, `semcache_index_rebuilds_total`,
+  `semcache_index_rebuild_seconds`
 
 **Endpoints:** `/healthz`, `/readyz`, `/stats`, `/metrics`.
 
 ---
 
-## 16. Testing: how we know it works
+## 18. Testing: how we know it works
 
-**148 tests**, run under three builds (debug, ASan+UBSan, TSan).
+**198 tests**, run under three builds (debug, ASan+UBSan, TSan).
 
 **Unit tests (`tests/unit/`):**
 
@@ -924,8 +1144,11 @@ streamed, latency_ms, upstream_ms, upstream_error, bytes_in, [similarity], [bypa
 | `embedder_test.cpp` | **cosine > 0.999 gate** on 125 sentences, batch = single, unit length, paraphrase ordering, too-long rejection, concurrency, missing/corrupt model |
 | `context_key_test.cpp` | every parameter changes the key, absent ≠ default, transport fields don't, key order/number spelling don't, system messages, history window K, tool calls, field boundaries, NFC, all bypass reasons |
 | `simd_test.cpp` | AVX2 = scalar for all tail lengths, unaligned pointers, row scoring |
-| `vector_index_test.cpp` | interface contract (empty, exact find, sorted top-k, remove, replace, wrong dimension, memory) — parameterized so HNSW will reuse it |
-| `cache_store_test.cpp` | exact/nearest isolation, exact-only entries, TTL lazy + sweep, per-tenant TTL, replace, CLOCK second chance, tenant quota, too-large, evicted entry still valid for its reader, **4 readers + 1 writer** (TSan) |
+| `vector_index_test.cpp` | interface contract (empty, exact find, sorted top-k, remove, replace, wrong dimension, memory), run against brute force (scalar, AVX2) **and HNSW** (default and small-M) |
+| `hnsw_test.cpp` | **recall@10 ≥ 0.95 vs brute force**, larger ef never lowers recall, tombstones never returned + rebuild signal, same seed → same graph, memory bound, concurrent searches agree (TSan) |
+| `cache_store_test.cpp` | exact/nearest isolation, exact-only entries, TTL lazy + sweep, per-tenant TTL, replace, CLOCK second chance, tenant quota, too-large, evicted entry still valid for its reader, **4 readers + 1 writer** (TSan), auto upgrade to HNSW, tombstone rebuild (deduplicated), readers during upgrades |
+| `cache_writer_test.cpp` | inserts applied asynchronously in order, callback always runs, full queue drops + counts, stop applies queued work, expiry on the writer |
+| `coalescer_test.cpp` | leader/follower roles and retire, complete replay with own headers, live stream replay, leader gone before head → serve alone, mid-stream abort → error event, follower cap, leader keeps going for followers, bounded log |
 | `worker_pool_test.cpp` | runs on pool thread and resumes on caller, exceptions, full queue rejects immediately, stop completes every caller |
 | `completion_codec_test.cpp` | reassembly at random chunk boundaries, tool-call merging, incomplete/error streams, overflow, storability rules, fresh ids, **re-stream round trip** |
 
@@ -938,18 +1161,19 @@ streamed, latency_ms, upstream_ms, upstream_error, bytes_in, [similarity], [bypa
 | `failure_test.cpp` | 5xx passthrough, unreachable → 502, first-byte/total/idle timeouts, reset mid-stream, oversized response, overload → 503, shutdown cancels hung upstream calls |
 | `cache_test.cpp` | MISS then exact HIT without upstream call; paraphrase above/below threshold; configurable threshold; streamed miss served to both modes; tenants isolated; different context misses; bypass header; uncacheable requests; cache disabled; errors and interrupted streams never stored; embedder failure fails open; too-long prompt exact-only; no-embedder mode; full embed queue fails open; `/stats` and metrics |
 | `semantic_model_test.cpp` | the **real model** end to end: rewordings HIT, different questions MISS |
+| `herd_test.cpp` | coalescing under herds (§12.8): 50 → 1 upstream call, live streaming followers, shared errors, cap, isolation, leader hang-up, mixed-traffic stress |
 
 **Test helpers:** `TestEnv` starts mock + proxy on random ports in-process and drains them on
 destruction; `FakeEmbedder` makes similarities exact (`alias(text, canonical, 0.95)`), can fail on
 demand, and can block (to fill the queue).
 
-**Mutation check:** removing the tenant from the context key was tried deliberately — both the
-unit test and the cross-tenant integration test failed (the second tenant got a HIT). So the
-isolation tests really detect that bug.
+**Mutation checks** (break the code on purpose, confirm tests fail): removing the tenant from the
+context key (unit + cross-tenant integration test fail); disabling coalescing (8 of 12 herd tests
+fail); letting a leader stop when its client leaves (unit test + a dedicated integration test fail).
 
 ---
 
-## 17. Measurements so far
+## 19. Measurements so far
 
 All from reproducible scripts; raw JSON under `bench/results/`. Machine: i7-1165G7 laptop under
 WSL2, which measured well below the CPU's capability (~35 GFLOP/s single-core).
@@ -981,9 +1205,15 @@ gate) — not adopted.
 **End to end (real binary + real model, smoke test):** exact HIT ~0.6 ms added; semantic HIT
 ~10 ms added (mostly embedding); MISS = upstream time (mock: 400 ms).
 
+**Coalescing (Phase 4, real binary):** 30 concurrent identical requests → 1 upstream call
+(1 MISS + 29 COALESCED, one distinct body); 10 identical streams → 1 upstream call, all complete.
+
+**HNSW (Phase 5):** see the table in §13.5 — recall@10 = 1.0 at ef=64 on synthetic clustered
+data up to 50K vectors; p50 224 µs vs 1,451 µs brute force at 10K; auto switch at 5,000 vectors.
+
 ---
 
-## 18. Known weaknesses and what comes next
+## 20. Known weaknesses and what comes next
 
 **Known weaknesses:**
 - Embedding is slow on this laptop: above the 10 ms HIT budget for longer prompts. Re-measure on
@@ -991,15 +1221,16 @@ gate) — not adopted.
 - The model misses real paraphrases with different wording (cosine 0.55 for "money back" vs
   "refund policy"). Phase 7 measures hit vs false-hit rates.
 - Context key K=2 can share answers between conversations that differ only earlier (ADR-002).
-- Inserts run synchronously on I/O threads (Phase 4 adds the writer thread).
-- A client disconnecting mid-MISS aborts the upstream call, so that work is not cached.
+- HNSW recall was measured on synthetic clusters; real embeddings (Phase 7) may need a larger `ef`.
+- HNSW builds grow super-linearly (100 s at 50K on this laptop) and run on the single writer
+  thread; inserts queue (and may be dropped) during an upgrade or tombstone rebuild.
+- Coalescing is exact-key only; herds of *paraphrases* each go upstream (ADR-009).
+- Followers receive the leader's response id (by design: identical response).
 - Streamed misses without `include_usage` store no usage → tokens saved is undercounted.
 - `/stats` percentiles are bucket estimates.
 - CI has not yet run on GitHub.
 
 **Next phases:**
-4. Coalescing (identical in-flight requests share one upstream call), writer thread, herd tests.
-5. HNSW index (approximate nearest neighbour) behind the same interface; recall vs brute force.
 6. Persistence (snapshot + write-ahead log), purge by tag/tenant.
 7. Evaluation: QQP + synthetic FAQ, hit vs false-hit curve, throughput, cost model.
 8. Dashboard.
@@ -1007,7 +1238,7 @@ gate) — not adopted.
 
 ---
 
-## 19. How to build, run and test
+## 21. How to build, run and test
 
 ```bash
 # one-time setup
@@ -1016,7 +1247,7 @@ scripts/fetch-model.sh               # model + vocab, hash-checked
 
 # build (ALWAYS -j4 on this machine)
 cmake --preset debug && cmake --build build/debug -j4
-ctest --test-dir build/debug         # 148 tests
+ctest --test-dir build/debug         # 198 tests
 
 cmake --preset asan && cmake --build build/asan -j4 && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j4 && ctest --test-dir build/tsan
@@ -1033,6 +1264,7 @@ curl -s localhost:8080/stats
 cmake --preset release && cmake --build build/release -j4
 bench/run_embed_bench.sh
 ./build/release/semcache_bench_index --benchmark_repetitions=5
+./build/release/semcache_hnsw_eval --sizes 1000,5000,10000 --queries 500 --out hnsw.json
 
 # Python tooling (only to regenerate golden files / tables)
 python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
@@ -1042,7 +1274,7 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 
 ---
 
-## 20. Glossary
+## 22. Glossary
 
 | Term | Meaning |
 |---|---|
@@ -1069,3 +1301,8 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 | **Golden file** | Reference outputs from a trusted implementation that tests compare against. |
 | **Sanitizers** | ASan (memory errors), UBSan (undefined behaviour), TSan (data races), LSan (leaks). |
 | **Mutation test** | Breaking the code on purpose to check the tests notice. |
+| **Flight / leader / follower** | One shared upstream call / the request that makes it / the identical requests that wait for and replay its response. |
+| **Writer thread** | The one thread allowed to change the cache; everyone else submits work to its queue. |
+| **Recall@k** | Share of the true k nearest neighbours that an approximate search returns (1.0 = all). |
+| **M / ef** | HNSW links per node / beam width (how many candidates a search keeps). |
+| **Tombstone** | A deleted item kept in place (marked dead) because removing it outright is expensive or unsafe. |
