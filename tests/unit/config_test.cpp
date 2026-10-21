@@ -143,6 +143,24 @@ TEST(Config, EmbedderSection) {
       ConfigError);
 }
 
+TEST(Config, IndexSection) {
+  auto env = fake_env({{"KEY_ACME", "k"}, {"SEMCACHE_INDEX__HNSW_EF_SEARCH", "32"}});
+  auto def = load_config_from_string(kMinimal, env);
+  EXPECT_EQ(def.index.kind, IndexKind::automatic);
+  EXPECT_EQ(def.index.hnsw_min_partition_size, 5000u) << "measured switch point (bench/results/phase5)";
+  EXPECT_EQ(def.index.hnsw_ef_search, 32u) << "env override";
+  auto brute = load_config_from_string(std::string("[index]\nkind = \"brute\"\n") + std::string(kMinimal), env);
+  EXPECT_EQ(brute.index.kind, IndexKind::brute);
+  auto plain = fake_env({{"KEY_ACME", "k"}});
+  EXPECT_THROW((void)load_config_from_string(std::string("[index]\nkind = \"faiss\"\n") + std::string(kMinimal), plain),
+               ConfigError);
+  EXPECT_THROW((void)load_config_from_string(std::string("[index]\nhnsw_m = 1\n") + std::string(kMinimal), plain),
+               ConfigError);
+  EXPECT_THROW(
+      (void)load_config_from_string(std::string("[index]\nhnsw_max_tombstone_ratio = 1.5\n") + std::string(kMinimal), plain),
+      ConfigError);
+}
+
 TEST(Config, ParseErrorReportsLine) {
   try {
     (void)load_config_from_string("[server\nport = 1\n", fake_env({}));

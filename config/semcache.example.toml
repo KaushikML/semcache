@@ -48,6 +48,15 @@ restream_delay_ms = 0              # pause between re-streamed chunks
 sweep_interval_ms = 60000          # active TTL expiry
 writer_queue_capacity = 4096       # pending inserts for the writer thread; full => insert dropped
 
+[index]
+kind = "auto"                      # "brute" (exact) | "hnsw" (approximate) | "auto"
+hnsw_min_partition_size = 5000     # auto: switch to HNSW at this size (measured, bench/results/phase5)
+hnsw_m = 16                        # graph degree (layer 0 keeps 2M links)
+hnsw_ef_construction = 200         # build beam width: graph quality vs insert cost
+hnsw_ef_search = 64                # search beam width: recall vs latency
+hnsw_max_tombstone_ratio = 0.25    # rebuild a partition's graph when this share is deleted
+hnsw_seed = 42                     # graphs are reproducible
+
 [coalescer]
 enabled = true                     # identical in-flight requests share one upstream call
 max_waiters_per_flight = 1000      # beyond this, duplicates are served independently

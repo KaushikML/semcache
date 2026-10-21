@@ -79,6 +79,20 @@ struct CacheConfig {
   std::size_t writer_queue_capacity = 4096;  // pending inserts; when full, inserts are dropped (§7.4)
 };
 
+enum class IndexKind { brute, hnsw, automatic };
+
+struct IndexConfig {
+  IndexKind kind = IndexKind::automatic;
+  // auto: a partition switches from brute force to HNSW at this many vectors (one-way). Set from the
+  // Phase 5 measurements, see bench/results/phase5.
+  std::size_t hnsw_min_partition_size = 5'000;
+  std::size_t hnsw_m = 16;                // graph degree (layer 0 keeps 2M)
+  std::size_t hnsw_ef_construction = 200;  // beam width while inserting
+  std::size_t hnsw_ef_search = 64;         // beam width while searching (>= k)
+  double hnsw_max_tombstone_ratio = 0.25;  // rebuild a partition's graph beyond this share of deletes
+  std::uint64_t hnsw_seed = 42;            // level RNG seed: graphs are reproducible
+};
+
 struct CoalescerConfig {
   bool enabled = true;
   std::size_t max_waiters_per_flight = 1000;  // beyond this, a duplicate is served independently
@@ -109,6 +123,7 @@ struct Config {
   EmbedderConfig embedder;
   CacheConfig cache;
   CoalescerConfig coalescer;
+  IndexConfig index;
   LimitsConfig limits;
   LoggingConfig logging;
   std::vector<TenantConfig> tenants;

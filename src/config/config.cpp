@@ -283,6 +283,14 @@ void finalize_config(Config& cfg) {
   if (c.sweep_interval.count() <= 0) throw ConfigError("cache.sweep_interval_ms must be > 0");
   if (c.writer_queue_capacity == 0) throw ConfigError("cache.writer_queue_capacity must be > 0");
   if (cfg.coalescer.max_waiters_per_flight == 0) throw ConfigError("coalescer.max_waiters_per_flight must be > 0");
+  const auto& ix = cfg.index;
+  if (ix.hnsw_m < 2) throw ConfigError("index.hnsw_m must be >= 2");
+  if (ix.hnsw_ef_construction < ix.hnsw_m) throw ConfigError("index.hnsw_ef_construction must be >= index.hnsw_m");
+  if (ix.hnsw_ef_search < 1) throw ConfigError("index.hnsw_ef_search must be >= 1");
+  if (!(ix.hnsw_max_tombstone_ratio > 0 && ix.hnsw_max_tombstone_ratio < 1)) {
+    throw ConfigError("index.hnsw_max_tombstone_ratio must be in (0, 1)");
+  }
+  if (ix.hnsw_min_partition_size < 1) throw ConfigError("index.hnsw_min_partition_size must be >= 1");
 
   if (cfg.limits.rps <= 0 || cfg.limits.burst < 1) {
     throw ConfigError("limits.rps must be > 0 and limits.burst >= 1");
@@ -361,6 +369,25 @@ Config load_config_from_string(std::string_view toml_text, const EnvLookup& env)
   r.read("cache", "restream_delay_ms", c.restream_delay);
   r.read("cache", "sweep_interval_ms", c.sweep_interval);
   r.read("cache", "writer_queue_capacity", c.writer_queue_capacity);
+
+  auto& ix = cfg.index;
+  std::string kind = "auto";
+  r.read("index", "kind", kind);
+  if (kind == "brute") {
+    ix.kind = IndexKind::brute;
+  } else if (kind == "hnsw") {
+    ix.kind = IndexKind::hnsw;
+  } else if (kind == "auto") {
+    ix.kind = IndexKind::automatic;
+  } else {
+    throw ConfigError("index.kind must be 'brute', 'hnsw' or 'auto'");
+  }
+  r.read("index", "hnsw_min_partition_size", ix.hnsw_min_partition_size);
+  r.read("index", "hnsw_m", ix.hnsw_m);
+  r.read("index", "hnsw_ef_construction", ix.hnsw_ef_construction);
+  r.read("index", "hnsw_ef_search", ix.hnsw_ef_search);
+  r.read("index", "hnsw_max_tombstone_ratio", ix.hnsw_max_tombstone_ratio);
+  r.read("index", "hnsw_seed", ix.hnsw_seed);
 
   r.read("coalescer", "enabled", cfg.coalescer.enabled);
   r.read("coalescer", "max_waiters_per_flight", cfg.coalescer.max_waiters_per_flight);
