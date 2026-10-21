@@ -124,6 +124,12 @@ out of cache), in line with the estimates above. The 2 ms budget holds to **~15K
 partition**. The scalar fallback is ~15× slower. End-to-end on the dev box: an exact HIT adds
 ~0.6 ms in the proxy; a semantic HIT ~10 ms, dominated by embedding (§5.2).
 
+**Measured (Phase 5, [bench/results/phase5](../bench/results/phase5/README.md)):** HNSW (M=16,
+efC=200, ef=64) reaches recall@10 = 1.0000 on clustered synthetic data at 1K–50K vectors, with p50
+224 µs at 10K and 889 µs at 50K (brute force: 1,451 µs and 9,017 µs). `index.hnsw_min_partition_size`
+= **5,000**: the last measured size where brute force's p99 stays under the 2 ms budget. The
+upgrade costs a one-off ~3 s graph build on the writer thread.
+
 ### 5.4 Request limits (derived)
 
 - `server.max_body_bytes = 1 MiB`. A 128K-token context is ~500 KB of text, so this is generous;
@@ -506,7 +512,7 @@ sweep_interval_ms = 60000
 
 [index]
 kind = "auto"                 # "brute" | "hnsw" | "auto"
-hnsw_min_partition_size = 10000   # placeholder; Phase 5 measures
+hnsw_min_partition_size = 5000    # measured in Phase 5 (bench/results/phase5)
 hnsw_m = 16
 hnsw_ef_construction = 200
 hnsw_ef_search = 64

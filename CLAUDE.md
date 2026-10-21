@@ -70,12 +70,14 @@ Source of truth for design: `docs/design.md`. Decisions: `docs/adr/`.
 - Phase 3 (cache v1): done. Context key (denylist of transport fields), AVX2/scalar dot,
   `BruteForceIndex`, `CacheStore` (partitions, exact fast path, TTL, CLOCK, quotas), embed pool,
   SSE assembly/re-stream, headers, metrics, `/stats`. Brute force meets 2 ms to ~15K vectors.
-- **Phase 4 (coalescing + concurrency): implemented, awaiting review.** `CacheWriter` = single writer
-  thread (bounded queue; TTL sweeps go through it). `Coalescer`: flight key = context + prompt hash +
-  stream flags; leader serves through `LeaderWriter` (records what its client gets), followers
-  replay live (`X-Semcache: COALESCED`); leader errors shared; leader vanishing before a head =>
-  followers fail open; flight retired only after the insert is applied. Near-duplicate coalescing
-  not implemented (ADR-009 notes). Tests: herd (50 → 1 upstream call), streaming live, failures,
-  caps, mixed-traffic stress; 174 green on debug/asan/tsan. Coroutines take parameters by value.
+- Phase 4 (coalescing + concurrency): done. `CacheWriter` single writer thread; `Coalescer` (flight
+  key = context + prompt hash + stream flags; leader records via `LeaderWriter`, followers replay
+  live; flight retired after the insert is applied). Coroutines take parameters by value.
+- **Phase 5 (HNSW): implemented, awaiting review.** `HnswIndex` (Malkov & Yashunin; heuristic
+  neighbour selection; tombstone deletes; thread_local visited set). `CacheStore` honours
+  `index.kind` (brute/hnsw/auto); auto upgrades a partition at `hnsw_min_partition_size = 5000`
+  (measured); upgrades and tombstone rebuilds are built off-lock on the writer and swapped in.
+  `bench/hnsw_eval.cpp`: recall@10 = 1.0 at ef=64 (synthetic clusters), p50 224 µs vs BF 1.45 ms
+  at 10K. Known cost: super-linear build (2.9 s at 5K, 100 s at 50K) on the writer thread.
   Deferred: tags/purge (Phase 6), `/stats/stream` + recent-requests ring (Phase 8).
 - Python tooling: `python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt`.

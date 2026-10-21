@@ -30,3 +30,24 @@ measurement.
 - − HNSW deletes are awkward (tombstones degrade the graph). Plan: tombstone, then rebuild the
   partition when the tombstone ratio exceeds a threshold.
 - − Two implementations to maintain. The shared interface tests run against both.
+
+## Implementation notes (Phase 5, 2026-10-21)
+- `HnswIndex` (`src/index/hnsw_index.*`): layers from `floor(-ln U / ln M)`, greedy descent then
+  beam search (`ef_search`), the paper's neighbour-selection heuristic (Algorithm 4, pruned
+  connections kept to fill up), bidirectional links pruned to M (2M on layer 0), seeded RNG so
+  graphs are reproducible.
+- **Deletes are tombstones** that keep routing searches and stay eligible as neighbours, so a
+  deleted entry point cannot disconnect the graph; they are filtered from results.
+  `wants_rebuild()` fires past `index.hnsw_max_tombstone_ratio` (0.25).
+- **Rebuilds and upgrades happen outside the partition lock.** The writer thread (the only
+  mutator) builds a fresh index from the partition's live entries, then swaps it in under a brief
+  exclusive lock, so readers never wait for a graph build. `index.kind = auto` upgrades a
+  partition to HNSW at `hnsw_min_partition_size`. A tombstone rebuild that finds the partition
+  below that size goes back to brute force.
+- `search()` is const and runs concurrently under the shared lock; its visited set is a
+  `thread_local` generation-stamped array (no per-search clearing).
+- **Measured** ([bench/results/phase5](../../bench/results/phase5/README.md), synthetic clustered
+  384-d data): recall@10 = 1.0000 at ef=64 for 1K–50K vectors; p50 224 µs vs brute force 1,451 µs
+  at 10K. Switch point set to **5,000**, where brute force's p99 is still under the 2 ms budget
+  and HNSW is already 2× faster at the median. Cost: ~8% more memory and a super-linear build
+  (2.9 s at 5K, 100 s at 50K), paid on the writer thread.
