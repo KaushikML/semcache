@@ -21,6 +21,7 @@ class BruteForceIndex final : public VectorIndex {
   [[nodiscard]] std::size_t size() const override { return ids_.size(); }
   [[nodiscard]] std::size_t dim() const override { return dim_; }
   [[nodiscard]] std::size_t memory_bytes() const override;
+  [[nodiscard]] std::string_view kind() const override { return "brute"; }
 
  private:
   std::size_t dim_;

@@ -9,6 +9,7 @@
 #include <random>
 
 #include "index/brute_force_index.hpp"
+#include "index/hnsw_index.hpp"
 
 namespace semcache {
 namespace {
@@ -114,7 +115,14 @@ INSTANTIATE_TEST_SUITE_P(
         std::make_pair(std::string("BruteForceScalar"),
                        Factory([](std::size_t d) { return std::make_unique<BruteForceIndex>(d, SimdLevel::scalar); })),
         std::make_pair(std::string("BruteForceBest"),
-                       Factory([](std::size_t d) { return std::make_unique<BruteForceIndex>(d); }))),
+                       Factory([](std::size_t d) { return std::make_unique<BruteForceIndex>(d); })),
+        std::make_pair(std::string("Hnsw"), Factory([](std::size_t d) {
+                         return std::make_unique<HnswIndex>(d, HnswIndex::Params{});
+                       })),
+        std::make_pair(std::string("HnswSmallM"), Factory([](std::size_t d) {
+                         return std::make_unique<HnswIndex>(d, HnswIndex::Params{.m = 4, .ef_construction = 16,
+                                                                                  .ef_search = 8});
+                       }))),
     [](const auto& info) { return info.param.first; });
 
 }  // namespace
