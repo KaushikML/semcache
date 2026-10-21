@@ -105,7 +105,7 @@ int main(int argc, char** argv) {
     log::warn("embedder unavailable; exact-match caching only", {{"error", e.what()}});
   }
 
-  CacheStore store(cfg.cache, cfg.tenants, registry);
+  CacheStore store(cfg.cache, cfg.tenants, registry, cfg.index);
   std::unique_ptr<WorkerPool> embed_pool;
   if (embedder) embed_pool = std::make_unique<WorkerPool>("embed", cfg.embedder.threads, cfg.embedder.queue_capacity);
   // Declared before the writer so it outlives the writer thread's after-insert callbacks.

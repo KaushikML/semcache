@@ -18,6 +18,7 @@ add_executable(semcache_unit_tests
   unit/context_key_test.cpp
   unit/simd_test.cpp
   unit/vector_index_test.cpp
+  unit/hnsw_test.cpp
   unit/log_test.cpp
   unit/metrics_test.cpp
   unit/rate_limiter_test.cpp

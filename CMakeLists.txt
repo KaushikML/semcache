@@ -33,6 +33,7 @@ add_library(semcache_core STATIC
   src/cache/context_key.cpp
   src/index/simd.cpp
   src/index/brute_force_index.cpp
+  src/index/hnsw_index.cpp
   src/config/config.cpp
   src/embed/bert_normalizer.cpp
   src/embed/wordpiece_tokenizer.cpp
@@ -79,6 +80,9 @@ if(SEMCACHE_BUILD_BENCH)
   add_executable(semcache_bench_index bench/index_bench.cpp)
   target_link_libraries(semcache_bench_index PRIVATE semcache_core benchmark::benchmark)
   semcache_set_warnings(semcache_bench_index)
+  add_executable(semcache_hnsw_eval bench/hnsw_eval.cpp)
+  target_link_libraries(semcache_hnsw_eval PRIVATE semcache_core)
+  semcache_set_warnings(semcache_hnsw_eval)
 endif()
 
 if(SEMCACHE_BUILD_TESTS)

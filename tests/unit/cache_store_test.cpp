@@ -232,3 +232,72 @@ TEST_F(CacheStoreTest, ConcurrentReadersAndWriter) {
 
 }  // namespace
 }  // namespace semcache
+
+namespace semcache {
+namespace {
+
+IndexConfig auto_index(std::size_t min_size) {
+  IndexConfig ix;
+  ix.kind = IndexKind::automatic;
+  ix.hnsw_min_partition_size = min_size;
+  ix.hnsw_ef_construction = 32;
+  return ix;
+}
+
+TEST_F(CacheStoreTest, AutoIndexUpgradesLargePartitionsToHnsw) {
+  CacheStore s(CacheConfig{}, {}, registry_, auto_index(50));
+  for (std::uint32_t i = 0; i < 49; ++i) s.insert(entry(1, static_cast<std::uint8_t>(i), unit_vec(i)), T0);
+  EXPECT_EQ(s.stats().hnsw_partitions, 0u);
+  s.insert(entry(1, 49, unit_vec(49)), T0);
+  EXPECT_EQ(s.stats().hnsw_partitions, 1u);
+  s.insert(entry(2, 1, unit_vec(1000)), T0);  // a small partition stays brute force
+  EXPECT_EQ(s.stats().hnsw_partitions, 1u);
+  for (std::uint32_t i = 0; i < 50; i += 7) {
+    auto m = s.nearest(ctx(1), unit_vec(i), T0);
+    ASSERT_TRUE(m.entry);
+    EXPECT_EQ(m.entry->prompt_hash, ph(static_cast<std::uint8_t>(i))) << "still finds exact vectors after the swap";
+  }
+  EXPECT_NE(registry_.render_prometheus().find("semcache_index_rebuilds_total 1\n"), std::string::npos);
+}
+
+TEST_F(CacheStoreTest, TombstoneHeavyHnswPartitionIsRebuilt) {
+  IndexConfig ix;
+  ix.kind = IndexKind::hnsw;
+  ix.hnsw_max_tombstone_ratio = 0.25;
+  ix.hnsw_ef_construction = 32;
+  CacheConfig cfg;
+  cfg.default_ttl = std::chrono::seconds(100);
+  CacheStore s(cfg, {}, registry_, ix);
+  for (std::uint32_t i = 0; i < 40; ++i) s.insert(entry(1, static_cast<std::uint8_t>(i), unit_vec(i)), T0);
+  // Re-inserting the same prompt replaces the entry: the old vector becomes a tombstone.
+  for (std::uint32_t i = 0; i < 15; ++i) s.insert(entry(1, static_cast<std::uint8_t>(i), unit_vec(i + 500)), T0);
+  EXPECT_NE(registry_.render_prometheus().find("semcache_index_rebuilds_total 1\n"), std::string::npos)
+      << "15/55 > 25% tombstones => one rebuild (deduplicated)";
+  EXPECT_EQ(s.stats().entries, 40u);
+  auto m = s.nearest(ctx(1), unit_vec(503), T0);
+  ASSERT_TRUE(m.entry);
+  EXPECT_EQ(m.entry->prompt_hash, ph(3));
+}
+
+TEST_F(CacheStoreTest, ConcurrentReadersDuringHnswUpgrades) {
+  CacheStore s(CacheConfig{}, {}, registry_, auto_index(30));
+  std::atomic<bool> stop{false};
+  std::vector<std::thread> readers;
+  for (int t = 0; t < 4; ++t) {
+    readers.emplace_back([&, t] {
+      std::uint32_t i = 0;
+      while (!stop.load()) {
+        auto m = s.nearest(ctx(static_cast<std::uint8_t>(i % 3)), unit_vec(static_cast<std::uint32_t>(t * 100 + i % 90)), T0);
+        if (m.entry) EXPECT_FALSE(m.entry->response.empty());
+        ++i;
+      }
+    });
+  }
+  for (std::uint32_t i = 0; i < 270; ++i) s.insert(entry(static_cast<std::uint8_t>(i % 3), static_cast<std::uint8_t>(i / 3), unit_vec(i)), T0);
+  stop = true;
+  for (auto& r : readers) r.join();
+  EXPECT_EQ(s.stats().hnsw_partitions, 3u);
+}
+
+}  // namespace
+}  // namespace semcache

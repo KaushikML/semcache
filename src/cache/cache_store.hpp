@@ -77,12 +77,13 @@ struct NearestMatch {
   float score = 0.0f;
 };
 
-using IndexFactory = std::function<std::unique_ptr<VectorIndex>(std::size_t dim)>;
-
 class CacheStore {
  public:
+  // `index` picks each partition's VectorIndex: brute force, HNSW, or auto (brute force until the
+  // partition reaches index.hnsw_min_partition_size, then HNSW). Index (re)builds run on the
+  // writer, outside the partition lock, and are swapped in afterwards.
   CacheStore(const CacheConfig& cfg, const std::vector<TenantConfig>& tenants, MetricsRegistry& metrics,
-             IndexFactory index_factory = {});
+             IndexConfig index = {});
   ~CacheStore();
   CacheStore(const CacheStore&) = delete;
   CacheStore& operator=(const CacheStore&) = delete;
@@ -103,6 +104,7 @@ class CacheStore {
     std::size_t entries = 0;
     std::size_t bytes = 0;
     std::size_t partitions = 0;
+    std::size_t hnsw_partitions = 0;
   };
   [[nodiscard]] Stats stats() const;
   [[nodiscard]] std::size_t tenant_bytes(const std::string& tenant) const;
@@ -119,11 +121,15 @@ class CacheStore {
   void remove_locked(const EntryPtr& e, Reason why);
   bool evict_one_locked(const std::string* only_tenant, CacheClock::time_point now);
   void publish_gauges_locked();
+  [[nodiscard]] std::unique_ptr<VectorIndex> make_index(std::size_t vectors) const;
+  // Rebuilds the partitions queued by insert/remove (auto upgrade, too many tombstones).
+  void rebuild_pending_locked();
+  void rebuild_locked(const PartitionPtr& p);
 
   const CacheConfig cfg_;
   std::unordered_map<std::string, std::size_t> tenant_quota_;
   std::unordered_map<std::string, CacheClock::duration> tenant_ttl_;
-  IndexFactory index_factory_;
+  const IndexConfig index_cfg_;
 
   mutable std::shared_mutex map_mu_;  // L2
   std::unordered_map<ContextKey, PartitionPtr, DigestHash> partitions_;
@@ -137,6 +143,8 @@ class CacheStore {
   std::atomic<std::size_t> total_bytes_{0};
   std::atomic<std::size_t> total_entries_{0};
   std::atomic<std::size_t> partition_count_{0};
+  std::atomic<std::size_t> hnsw_count_{0};
+  std::vector<std::weak_ptr<Partition>> pending_rebuild_;
 
   Gauge& entries_gauge_;
   Gauge& bytes_gauge_;
@@ -145,6 +153,9 @@ class CacheStore {
   Counter& evicted_capacity_;
   Counter& evicted_quota_;
   Counter& rejected_too_large_;
+  Gauge& hnsw_gauge_;
+  Counter& rebuilds_;
+  Histogram& rebuild_seconds_;
 };
 
 }  // namespace semcache

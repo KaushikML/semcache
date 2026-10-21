@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "index/brute_force_index.hpp"
+#include "index/hnsw_index.hpp"
 
 namespace semcache {
 namespace {
@@ -28,10 +29,9 @@ struct CacheStore::Partition {
 };
 
 CacheStore::CacheStore(const CacheConfig& cfg, const std::vector<TenantConfig>& tenants, MetricsRegistry& m,
-                       IndexFactory index_factory)
+                       IndexConfig index)
     : cfg_(cfg),
-      index_factory_(index_factory ? std::move(index_factory)
-                                   : IndexFactory([](std::size_t dim) { return std::make_unique<BruteForceIndex>(dim); })),
+      index_cfg_(index),
       hand_(clock_.end()),
       entries_gauge_(m.gauge("semcache_index_entries", "Cached entries")),
       bytes_gauge_(m.gauge("semcache_index_bytes", "Accounted bytes of cached entries (budget: cache.max_bytes)")),
@@ -40,7 +40,11 @@ CacheStore::CacheStore(const CacheConfig& cfg, const std::vector<TenantConfig>& 
       evicted_capacity_(m.counter("semcache_evictions_total", "Entries removed by the cache", R"(reason="capacity")")),
       evicted_quota_(m.counter("semcache_evictions_total", "Entries removed by the cache", R"(reason="tenant_quota")")),
       rejected_too_large_(m.counter("semcache_store_skipped_total", "Cacheable responses not stored",
-                                    R"(reason="entry_over_budget")")) {
+                                    R"(reason="entry_over_budget")")),
+      hnsw_gauge_(m.gauge("semcache_index_hnsw_partitions", "Partitions searched with HNSW (others: brute force)")),
+      rebuilds_(m.counter("semcache_index_rebuilds_total", "Partition index rebuilds (HNSW upgrade or tombstones)")),
+      rebuild_seconds_(m.histogram("semcache_index_rebuild_seconds", "Time to rebuild one partition index",
+                                   latency_buckets_seconds())) {
   for (const auto& t : tenants) {
     if (t.max_bytes) tenant_quota_[t.id] = *t.max_bytes;
     if (t.ttl) tenant_ttl_[t.id] = *t.ttl;
@@ -137,8 +141,15 @@ InsertOutcome CacheStore::insert(NewEntry ne, CacheClock::time_point now) {
   {
     std::unique_lock lock(p->mu);
     if (entry->embedding) {
-      if (!p->index) p->index = index_factory_(kEmbeddingDim);
+      if (!p->index) {
+        p->index = make_index(1);
+        if (p->index->kind() == "hnsw") hnsw_count_.fetch_add(1, std::memory_order_relaxed);
+      }
       p->index->add(entry->id, *entry->embedding);
+      if (index_cfg_.kind == IndexKind::automatic && p->index->kind() == "brute" &&
+          p->index->size() >= index_cfg_.hnsw_min_partition_size) {
+        pending_rebuild_.push_back(p);  // upgrade to HNSW, outside this lock
+      }
     }
     p->entries.emplace(entry->id, entry);
     p->exact[entry->prompt_hash] = entry->id;
@@ -148,6 +159,7 @@ InsertOutcome CacheStore::insert(NewEntry ne, CacheClock::time_point now) {
   tenant_bytes_[entry->tenant] += bytes;
   total_bytes_.fetch_add(bytes, std::memory_order_relaxed);
   total_entries_.fetch_add(1, std::memory_order_relaxed);
+  rebuild_pending_locked();
   publish_gauges_locked();
   return InsertOutcome::stored;
 }
@@ -161,12 +173,14 @@ void CacheStore::remove_locked(const EntryPtr& e, Reason why) {
     if (auto it = p->exact.find(e->prompt_hash); it != p->exact.end() && it->second == e->id) p->exact.erase(it);
     if (p->index) p->index->remove(e->id);
     now_empty = p->entries.empty();
+    if (!now_empty && p->index && p->index->wants_rebuild()) pending_rebuild_.push_back(p);
   }
   if (now_empty) {
     // Only writers mutate partitions and we hold W, so the partition is still empty here.
     std::unique_lock lock(map_mu_);
     partitions_.erase(e->context);
     partition_count_.fetch_sub(1, std::memory_order_relaxed);
+    if (p->index && p->index->kind() == "hnsw") hnsw_count_.fetch_sub(1, std::memory_order_relaxed);
   }
 
   if (auto it = clock_pos_.find(e->id); it != clock_pos_.end()) {
@@ -218,6 +232,7 @@ std::size_t CacheStore::expire(CacheClock::time_point now) {
     if (e->expired(now)) dead.push_back(e);
   }
   for (const auto& e : dead) remove_locked(e, Reason::ttl);
+  rebuild_pending_locked();
   return dead.size();
 }
 
@@ -225,11 +240,68 @@ void CacheStore::publish_gauges_locked() {
   entries_gauge_.set(static_cast<std::int64_t>(total_entries_.load(std::memory_order_relaxed)));
   bytes_gauge_.set(static_cast<std::int64_t>(total_bytes_.load(std::memory_order_relaxed)));
   partitions_gauge_.set(static_cast<std::int64_t>(partition_count_.load(std::memory_order_relaxed)));
+  hnsw_gauge_.set(static_cast<std::int64_t>(hnsw_count_.load(std::memory_order_relaxed)));
+}
+
+std::unique_ptr<VectorIndex> CacheStore::make_index(std::size_t vectors) const {
+  const bool hnsw = index_cfg_.kind == IndexKind::hnsw ||
+                    (index_cfg_.kind == IndexKind::automatic && vectors >= index_cfg_.hnsw_min_partition_size);
+  if (!hnsw) return std::make_unique<BruteForceIndex>(kEmbeddingDim);
+  return std::make_unique<HnswIndex>(kEmbeddingDim, HnswIndex::Params{.m = index_cfg_.hnsw_m,
+                                                                      .ef_construction = index_cfg_.hnsw_ef_construction,
+                                                                      .ef_search = index_cfg_.hnsw_ef_search,
+                                                                      .max_tombstone_ratio = index_cfg_.hnsw_max_tombstone_ratio,
+                                                                      .seed = index_cfg_.hnsw_seed});
+}
+
+void CacheStore::rebuild_pending_locked() {
+  auto pending = std::move(pending_rebuild_);
+  pending_rebuild_.clear();
+  std::vector<const Partition*> done;  // a burst of removals queues the same partition repeatedly
+  for (const auto& weak : pending) {
+    auto p = weak.lock();  // a partition may have been dropped meanwhile
+    if (!p || std::find(done.begin(), done.end(), p.get()) != done.end()) continue;
+    done.push_back(p.get());
+    rebuild_locked(p);
+  }
+}
+
+void CacheStore::rebuild_locked(const PartitionPtr& p) {
+  const auto t0 = std::chrono::steady_clock::now();
+  // Build without the partition lock: we hold W, and only W holders mutate partitions, so reading
+  // `entries` here cannot race with a write; concurrent readers keep searching the old index.
+  std::size_t vectors = 0;
+  for (const auto& [id, e] : p->entries) vectors += e->embedding.has_value();
+  std::unique_ptr<VectorIndex> fresh;
+  if (vectors > 0) {
+    fresh = make_index(vectors);
+    for (const auto& [id, e] : p->entries) {
+      if (e->embedding) fresh->add(id, *e->embedding);
+    }
+  }
+  bool was_hnsw = false;
+  bool is_hnsw = fresh && fresh->kind() == "hnsw";
+  {
+    std::unique_lock lock(p->mu);  // short: pointer swap only
+    was_hnsw = p->index && p->index->kind() == "hnsw";
+    p->index.swap(fresh);
+  }
+  if (was_hnsw != is_hnsw) {
+    if (is_hnsw) {
+      hnsw_count_.fetch_add(1, std::memory_order_relaxed);
+    } else {
+      hnsw_count_.fetch_sub(1, std::memory_order_relaxed);
+    }
+  }
+  rebuilds_.inc();
+  rebuild_seconds_.observe(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+  // `fresh` now holds the old index; it is freed here, outside the lock. No reader can still be
+  // using it: searches run entirely under the shared partition lock we excluded for the swap.
 }
 
 CacheStore::Stats CacheStore::stats() const {
   return {total_entries_.load(std::memory_order_relaxed), total_bytes_.load(std::memory_order_relaxed),
-          partition_count_.load(std::memory_order_relaxed)};
+          partition_count_.load(std::memory_order_relaxed), hnsw_count_.load(std::memory_order_relaxed)};
 }
 
 std::size_t CacheStore::tenant_bytes(const std::string& tenant) const {

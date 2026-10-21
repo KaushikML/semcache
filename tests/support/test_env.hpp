@@ -84,7 +84,7 @@ class TestEnv {
     if (tweak) tweak(cfg_);
     finalize_config(cfg_);
     upstream_ = std::make_unique<HttpUpstream>(cfg_.upstream, tls_);
-    store_ = std::make_unique<CacheStore>(cfg_.cache, cfg_.tenants, registry_);
+    store_ = std::make_unique<CacheStore>(cfg_.cache, cfg_.tenants, registry_, cfg_.index);
     if (cfg_.coalescer.enabled) {
       coalescer_ = std::make_unique<Coalescer>(cfg_.coalescer, cfg_.upstream.max_response_bytes, registry_);
     }
