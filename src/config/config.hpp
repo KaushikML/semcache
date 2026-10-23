@@ -77,6 +77,21 @@ struct CacheConfig {
   Millis restream_delay{0};               // pause between re-streamed chunks
   Millis sweep_interval{60'000};          // active TTL expiry
   std::size_t writer_queue_capacity = 4096;  // pending inserts; when full, inserts are dropped (§7.4)
+  // Tags (X-Semcache-Tags) a client may attach; invalid tags make the request BYPASS.
+  std::size_t max_tags_per_entry = 16;
+  std::size_t max_tag_bytes = 64;
+  // How long a purge also blocks inserts from requests that started before it. Must exceed the
+  // longest request (upstream.total_timeout_ms).
+  Seconds purge_guard_window{300};
+};
+
+struct PersistenceConfig {
+  bool enabled = true;
+  std::string dir = "data";
+  Seconds snapshot_interval{300};
+  Millis fsync_interval{1000};  // at most this window of inserts is lost on a crash (design §3)
+  Millis retry_interval{30'000};  // after a disk error, how often to try writing again
+  std::size_t max_wal_bytes = std::size_t{256} << 20;  // a snapshot starts early past this
 };
 
 enum class IndexKind { brute, hnsw, automatic };
@@ -124,6 +139,8 @@ struct Config {
   CacheConfig cache;
   CoalescerConfig coalescer;
   IndexConfig index;
+  PersistenceConfig persistence;
+  Secret admin_key;  // SEMCACHE_ADMIN_KEY only; empty => /admin/* disabled
   LimitsConfig limits;
   LoggingConfig logging;
   std::vector<TenantConfig> tenants;

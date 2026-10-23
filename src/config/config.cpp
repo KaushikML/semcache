@@ -291,6 +291,16 @@ void finalize_config(Config& cfg) {
     throw ConfigError("index.hnsw_max_tombstone_ratio must be in (0, 1)");
   }
   if (ix.hnsw_min_partition_size < 1) throw ConfigError("index.hnsw_min_partition_size must be >= 1");
+  const auto& pc = cfg.persistence;
+  if (pc.enabled && pc.dir.empty()) throw ConfigError("persistence.dir must be set when persistence is enabled");
+  if (pc.snapshot_interval.count() <= 0 || pc.fsync_interval.count() <= 0 || pc.retry_interval.count() <= 0) {
+    throw ConfigError("persistence intervals must be > 0");
+  }
+  if (pc.max_wal_bytes == 0) throw ConfigError("persistence.max_wal_bytes must be > 0");
+  if (cfg.cache.max_tag_bytes == 0) throw ConfigError("cache.max_tag_bytes must be > 0");
+  if (cfg.cache.purge_guard_window < std::chrono::duration_cast<Seconds>(cfg.upstream.total_timeout)) {
+    throw ConfigError("cache.purge_guard_window_s must be >= upstream.total_timeout_ms");
+  }
 
   if (cfg.limits.rps <= 0 || cfg.limits.burst < 1) {
     throw ConfigError("limits.rps must be > 0 and limits.burst >= 1");
@@ -388,6 +398,19 @@ Config load_config_from_string(std::string_view toml_text, const EnvLookup& env)
   r.read("index", "hnsw_ef_search", ix.hnsw_ef_search);
   r.read("index", "hnsw_max_tombstone_ratio", ix.hnsw_max_tombstone_ratio);
   r.read("index", "hnsw_seed", ix.hnsw_seed);
+
+  auto& pc = cfg.persistence;
+  r.read("persistence", "enabled", pc.enabled);
+  r.read("persistence", "dir", pc.dir);
+  r.read("persistence", "snapshot_interval_s", pc.snapshot_interval);
+  r.read("persistence", "fsync_interval_ms", pc.fsync_interval);
+  r.read("persistence", "retry_interval_ms", pc.retry_interval);
+  r.read("persistence", "max_wal_bytes", pc.max_wal_bytes);
+  if (auto key = env("SEMCACHE_ADMIN_KEY"); key && !key->empty()) cfg.admin_key = Secret(*key);
+
+  r.read("cache", "max_tags_per_entry", c.max_tags_per_entry);
+  r.read("cache", "max_tag_bytes", c.max_tag_bytes);
+  r.read("cache", "purge_guard_window_s", c.purge_guard_window);
 
   r.read("coalescer", "enabled", cfg.coalescer.enabled);
   r.read("coalescer", "max_waiters_per_flight", cfg.coalescer.max_waiters_per_flight);

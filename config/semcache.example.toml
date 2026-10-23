@@ -3,6 +3,7 @@
 # Secrets never live in this file:
 #   SEMCACHE_UPSTREAM_API_KEY   key semcache uses to call upstream
 #   tenants[].key_env           names the env var holding each tenant's client key
+#   SEMCACHE_ADMIN_KEY          enables POST /admin/purge (unset => /admin/* returns 404)
 # Unknown keys are rejected at startup.
 
 mode = "live"                      # "live" | "demo"
@@ -47,6 +48,17 @@ restream_chunk_chars = 16          # re-streamed HIT chunk size
 restream_delay_ms = 0              # pause between re-streamed chunks
 sweep_interval_ms = 60000          # active TTL expiry
 writer_queue_capacity = 4096       # pending inserts for the writer thread; full => insert dropped
+max_tags_per_entry = 16            # X-Semcache-Tags; invalid tags => request is BYPASS
+max_tag_bytes = 64
+purge_guard_window_s = 300         # a purge also drops inserts from requests that started before it
+
+[persistence]
+enabled = true
+dir = "data"                       # snapshot.bin + wal-*.log
+snapshot_interval_s = 300
+fsync_interval_ms = 1000           # at most this window of inserts is lost on a crash
+retry_interval_ms = 30000          # after a disk error (memory-only meanwhile)
+max_wal_bytes = 268435456          # snapshot early once the WAL segment reaches this
 
 [index]
 kind = "auto"                      # "brute" (exact) | "hnsw" (approximate) | "auto"
