@@ -5,6 +5,7 @@
 // locks and the mutation order is total (Phase 6 appends it to the WAL in the same order).
 // Inserts become visible asynchronously, typically well under a millisecond after submission.
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -18,12 +19,26 @@
 
 namespace semcache {
 
+// Periodic work that must run on the writer thread between mutations (persistence: WAL fsync,
+// snapshots). Implemented by Persistence; keeps this module independent of it.
+class WriterHook {
+ public:
+  using Clock = std::chrono::steady_clock;
+  virtual ~WriterHook() = default;
+  virtual void tick(CacheStore& store, Clock::time_point now) = 0;
+  [[nodiscard]] virtual Clock::time_point next_deadline() const = 0;
+  virtual void close() = 0;
+};
+
 class CacheWriter {
  public:
   // Runs on the writer thread once the insert was attempted, whatever the outcome. Must not block.
   using AfterInsert = std::function<void(InsertOutcome)>;
 
-  CacheWriter(CacheStore& store, std::size_t capacity, MetricsRegistry& metrics);
+  using PurgeDone = std::function<void(std::size_t purged)>;
+
+  // `hook`, if any, is ticked after every mutation and whenever its deadline passes.
+  CacheWriter(CacheStore& store, std::size_t capacity, MetricsRegistry& metrics, WriterHook* hook = nullptr);
   ~CacheWriter();
   CacheWriter(const CacheWriter&) = delete;
   CacheWriter& operator=(const CacheWriter&) = delete;
@@ -33,6 +48,8 @@ class CacheWriter {
   bool submit_insert(NewEntry e, AfterInsert after = {});
   // Queues a TTL sweep unless one is already queued.
   void submit_expire();
+  // Queues a purge; `done` runs on the writer thread with the number removed. False if full.
+  bool submit_purge(PurgeFilter filter, PurgeDone done);
   // Blocks until everything submitted before the call has been applied. For tests and shutdown.
   void flush();
   // Applies what is queued, then stops the thread. Idempotent.
@@ -44,11 +61,18 @@ class CacheWriter {
     AfterInsert after;
   };
   struct Expire {};
-  using Job = std::variant<Insert, Expire>;
+  struct Purge {
+    PurgeFilter filter;
+    PurgeDone done;
+  };
+  using Job = std::variant<Insert, Expire, Purge>;
+
+  void apply(Job& job);
 
   void run();
 
   CacheStore& store_;
+  WriterHook* hook_;
   const std::size_t capacity_;
   std::mutex mu_;
   std::condition_variable cv_;       // work available / stopping
