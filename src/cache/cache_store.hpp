@@ -21,6 +21,7 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "cache/context_key.hpp"
 #include "config/config.hpp"
@@ -49,6 +50,7 @@ struct CacheEntry {
   std::optional<Embedding> embedding;   // absent => exact-match only (too long, or no embedder)
   std::string response;                 // assembled chat.completion JSON
   std::int64_t total_tokens = -1;       // upstream usage; -1 if unknown
+  std::vector<std::string> tags;        // purge handles (X-Semcache-Tags)
   CacheClock::time_point created;
   CacheClock::time_point expires;
   std::size_t bytes = 0;                // accounted size
@@ -68,9 +70,38 @@ struct NewEntry {
   std::optional<Embedding> embedding;
   std::string response;
   std::int64_t total_tokens = -1;
+  std::vector<std::string> tags;
+  // When the request that produced it arrived: a purge after this point drops the insert, so a
+  // response that was in flight during a purge cannot bring purged content back.
+  std::optional<CacheClock::time_point> request_started;
+  // Recovery only: keep the original timestamps instead of now / now + TTL.
+  std::optional<CacheClock::time_point> created;
+  std::optional<CacheClock::time_point> expires;
 };
 
-enum class InsertOutcome { stored, too_large, failed };  // failed: exception while applying
+// Selects entries to purge; every set field must match. At least one field must be set.
+struct PurgeFilter {
+  std::optional<std::string> tenant;
+  std::optional<std::string> tag;
+  std::optional<ContextKey> context;
+
+  [[nodiscard]] bool empty() const { return !tenant && !tag && !context; }
+  [[nodiscard]] bool matches(const std::string& entry_tenant, const std::vector<std::string>& entry_tags,
+                             const ContextKey& entry_context) const;
+};
+
+// Notified of every applied mutation, on the writer thread, in order (persistence: the WAL).
+// Replacing an entry with the same (context, prompt) is reported as an insert only.
+class MutationObserver {
+ public:
+  virtual ~MutationObserver() = default;
+  virtual void on_insert(const CacheEntry& e) = 0;
+  virtual void on_remove(const CacheEntry& e) = 0;
+};
+
+// failed: exception while applying; purged: a purge newer than the request matched; expired:
+// a recovered entry whose TTL already passed.
+enum class InsertOutcome { stored, too_large, failed, purged, expired };
 
 struct NearestMatch {
   EntryPtr entry;     // best live entry in the partition, or null if none
@@ -99,6 +130,16 @@ class CacheStore {
   InsertOutcome insert(NewEntry e, CacheClock::time_point now);
   // Removes expired entries; returns how many.
   std::size_t expire(CacheClock::time_point now);
+  // Removes every entry matching `f`; returns how many. Inserts from requests that started before
+  // `now` and match `f` are dropped for cache.purge_guard_window afterwards.
+  std::size_t purge(const PurgeFilter& f, CacheClock::time_point now);
+  // Removes the entry for (context, prompt) if present, without counting it as an eviction.
+  // Recovery uses it to replay WAL deletes.
+  bool erase(const ContextKey& ctx, const PromptHash& prompt);
+  // Every live entry, for snapshots. Cheap: entries are immutable and shared.
+  [[nodiscard]] std::vector<EntryPtr> all_entries() const;
+  // Set once, before the writer starts (not while mutations run).
+  void set_observer(MutationObserver* o) { observer_ = o; }
 
   struct Stats {
     std::size_t entries = 0;
@@ -112,7 +153,7 @@ class CacheStore {
  private:
   struct Partition;
   using PartitionPtr = std::shared_ptr<Partition>;
-  enum class Reason { ttl, capacity, tenant_quota, replaced };
+  enum class Reason { ttl, capacity, tenant_quota, purge, replaced };
 
   [[nodiscard]] PartitionPtr find_partition(const ContextKey& ctx) const;
   [[nodiscard]] std::size_t quota_for(const std::string& tenant) const;
@@ -145,6 +186,12 @@ class CacheStore {
   std::atomic<std::size_t> partition_count_{0};
   std::atomic<std::size_t> hnsw_count_{0};
   std::vector<std::weak_ptr<Partition>> pending_rebuild_;
+  struct RecentPurge {
+    PurgeFilter filter;
+    CacheClock::time_point at;
+  };
+  std::vector<RecentPurge> recent_purges_;
+  MutationObserver* observer_ = nullptr;
 
   Gauge& entries_gauge_;
   Gauge& bytes_gauge_;
@@ -155,6 +202,7 @@ class CacheStore {
   Counter& rejected_too_large_;
   Gauge& hnsw_gauge_;
   Counter& rebuilds_;
+  Counter& purged_;
   Histogram& rebuild_seconds_;
 };
 

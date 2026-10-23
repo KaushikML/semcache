@@ -15,11 +15,22 @@ constexpr std::size_t kEntryOverheadBytes = 350;
 constexpr std::size_t kSearchCandidates = 8;
 
 std::size_t accounted_bytes(const NewEntry& e) {
-  return kEntryOverheadBytes + e.tenant.size() + e.prompt.size() + e.response.size() +
+  std::size_t tags = 0;
+  for (const auto& t : e.tags) tags += t.size() + sizeof(std::string);
+  return kEntryOverheadBytes + e.tenant.size() + e.prompt.size() + e.response.size() + tags +
          (e.embedding ? sizeof(Embedding) : 0);
 }
 
 }  // namespace
+
+bool PurgeFilter::matches(const std::string& entry_tenant, const std::vector<std::string>& entry_tags,
+                          const ContextKey& entry_context) const {
+  if (empty()) return false;  // an empty filter never matches: purging everything must be explicit
+  if (tenant && *tenant != entry_tenant) return false;
+  if (context && *context != entry_context) return false;
+  if (tag && std::find(entry_tags.begin(), entry_tags.end(), *tag) == entry_tags.end()) return false;
+  return true;
+}
 
 struct CacheStore::Partition {
   mutable std::shared_mutex mu;  // L3
@@ -43,6 +54,7 @@ CacheStore::CacheStore(const CacheConfig& cfg, const std::vector<TenantConfig>& 
                                     R"(reason="entry_over_budget")")),
       hnsw_gauge_(m.gauge("semcache_index_hnsw_partitions", "Partitions searched with HNSW (others: brute force)")),
       rebuilds_(m.counter("semcache_index_rebuilds_total", "Partition index rebuilds (HNSW upgrade or tombstones)")),
+      purged_(m.counter("semcache_evictions_total", "Entries removed by the cache", R"(reason="purge")")),
       rebuild_seconds_(m.histogram("semcache_index_rebuild_seconds", "Time to rebuild one partition index",
                                    latency_buckets_seconds())) {
   for (const auto& t : tenants) {
@@ -103,6 +115,12 @@ InsertOutcome CacheStore::insert(NewEntry ne, CacheClock::time_point now) {
   }
 
   std::lock_guard w(writer_mu_);
+  if (ne.expires && *ne.expires <= now) return InsertOutcome::expired;  // recovery of a stale entry
+  if (ne.request_started) {
+    for (const auto& p : recent_purges_) {
+      if (*ne.request_started <= p.at && p.filter.matches(ne.tenant, ne.tags, ne.context)) return InsertOutcome::purged;
+    }
+  }
   if (auto old = exact_lookup(ne.context, ne.prompt_hash, CacheClock::time_point::min())) {
     remove_locked(old, Reason::replaced);  // newest answer wins
   }
@@ -123,8 +141,9 @@ InsertOutcome CacheStore::insert(NewEntry ne, CacheClock::time_point now) {
   e->embedding = ne.embedding;
   e->response = std::move(ne.response);
   e->total_tokens = ne.total_tokens;
-  e->created = now;
-  e->expires = now + ttl_for(e->tenant);
+  e->tags = std::move(ne.tags);
+  e->created = ne.created.value_or(now);
+  e->expires = ne.expires.value_or(now + ttl_for(e->tenant));
   e->bytes = bytes;
   EntryPtr entry = std::move(e);
 
@@ -159,6 +178,7 @@ InsertOutcome CacheStore::insert(NewEntry ne, CacheClock::time_point now) {
   tenant_bytes_[entry->tenant] += bytes;
   total_bytes_.fetch_add(bytes, std::memory_order_relaxed);
   total_entries_.fetch_add(1, std::memory_order_relaxed);
+  if (observer_ != nullptr) observer_->on_insert(*entry);
   rebuild_pending_locked();
   publish_gauges_locked();
   return InsertOutcome::stored;
@@ -196,8 +216,11 @@ void CacheStore::remove_locked(const EntryPtr& e, Reason why) {
     case Reason::ttl: evicted_ttl_.inc(); break;
     case Reason::capacity: evicted_capacity_.inc(); break;
     case Reason::tenant_quota: evicted_quota_.inc(); break;
+    case Reason::purge: purged_.inc(); break;
     case Reason::replaced: break;
   }
+  // A replacement is logged as the insert that replaces it (replay overwrites by key).
+  if (observer_ != nullptr && why != Reason::replaced) observer_->on_remove(*e);
   publish_gauges_locked();
 }
 
@@ -223,6 +246,34 @@ bool CacheStore::evict_one_locked(const std::string* only_tenant, CacheClock::ti
     return true;
   }
   return false;
+}
+
+std::size_t CacheStore::purge(const PurgeFilter& f, CacheClock::time_point now) {
+  if (f.empty()) return 0;
+  std::lock_guard w(writer_mu_);
+  std::vector<EntryPtr> victims;
+  for (const auto& e : clock_) {
+    if (f.matches(e->tenant, e->tags, e->context)) victims.push_back(e);
+  }
+  for (const auto& e : victims) remove_locked(e, Reason::purge);
+  std::erase_if(recent_purges_, [&](const RecentPurge& p) { return p.at + cfg_.purge_guard_window < now; });
+  recent_purges_.push_back({f, now});
+  rebuild_pending_locked();
+  return victims.size();
+}
+
+bool CacheStore::erase(const ContextKey& ctx, const PromptHash& prompt) {
+  std::lock_guard w(writer_mu_);
+  auto e = exact_lookup(ctx, prompt, CacheClock::time_point::min());
+  if (!e) return false;
+  remove_locked(e, Reason::replaced);  // silent: not an eviction, not re-logged
+  publish_gauges_locked();
+  return true;
+}
+
+std::vector<EntryPtr> CacheStore::all_entries() const {
+  std::lock_guard w(writer_mu_);
+  return {clock_.begin(), clock_.end()};
 }
 
 std::size_t CacheStore::expire(CacheClock::time_point now) {
