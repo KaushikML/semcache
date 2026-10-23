@@ -1,0 +1,180 @@
+{"intent": "refund_policy", "text": "What is your refund policy?", "kind": "canonical"}
+{"intent": "refund_policy", "text": "what's your refund policy", "kind": "paraphrase"}
+{"intent": "refund_policy", "text": "Can I get a refund?", "kind": "paraphrase"}
+{"intent": "refund_policy", "text": "How do refunds work?", "kind": "paraphrase"}
+{"intent": "refund_policy", "text": "How do I get my money back?", "kind": "paraphrase"}
+{"intent": "reset_password", "text": "How do I reset my password?", "kind": "canonical"}
+{"intent": "reset_password", "text": "How can I reset my password?", "kind": "paraphrase"}
+{"intent": "reset_password", "text": "I forgot my password", "kind": "paraphrase"}
+{"intent": "reset_password", "text": "Reset password steps", "kind": "paraphrase"}
+{"intent": "reset_password", "text": "I can't log in, how do I change my forgotten password?", "kind": "paraphrase"}
+{"intent": "change_email", "text": "How do I change my email address?", "kind": "canonical"}
+{"intent": "change_email", "text": "How can I update my email?", "kind": "paraphrase"}
+{"intent": "change_email", "text": "Change the email on my account", "kind": "paraphrase"}
+{"intent": "change_email", "text": "Where do I edit my e-mail address?", "kind": "paraphrase"}
+{"intent": "change_email", "text": "I want a different email for my login", "kind": "paraphrase"}
+{"intent": "cancel_subscription", "text": "How do I cancel my subscription?", "kind": "canonical"}
+{"intent": "cancel_subscription", "text": "How can I cancel my subscription?", "kind": "paraphrase"}
+{"intent": "cancel_subscription", "text": "Cancel my plan", "kind": "paraphrase"}
+{"intent": "cancel_subscription", "text": "I want to stop my membership", "kind": "paraphrase"}
+{"intent": "cancel_subscription", "text": "How do I end my monthly plan?", "kind": "paraphrase"}
+{"intent": "shipping_time", "text": "How long does shipping take?", "kind": "canonical"}
+{"intent": "shipping_time", "text": "How long is delivery?", "kind": "paraphrase"}
+{"intent": "shipping_time", "text": "When will my order arrive?", "kind": "paraphrase"}
+{"intent": "shipping_time", "text": "What are your delivery times?", "kind": "paraphrase"}
+{"intent": "shipping_time", "text": "How many days until my package gets here?", "kind": "paraphrase"}
+{"intent": "international_shipping", "text": "Do you ship internationally?", "kind": "canonical"}
+{"intent": "international_shipping", "text": "Do you ship outside the US?", "kind": "paraphrase"}
+{"intent": "international_shipping", "text": "Can you deliver to other countries?", "kind": "paraphrase"}
+{"intent": "international_shipping", "text": "Is worldwide shipping available?", "kind": "paraphrase"}
+{"intent": "international_shipping", "text": "Can I order from Canada?", "kind": "paraphrase"}
+{"intent": "payment_methods", "text": "What payment methods do you accept?", "kind": "canonical"}
+{"intent": "payment_methods", "text": "Which payment options are available?", "kind": "paraphrase"}
+{"intent": "payment_methods", "text": "Can I pay with PayPal?", "kind": "paraphrase"}
+{"intent": "payment_methods", "text": "Do you take credit cards?", "kind": "paraphrase"}
+{"intent": "payment_methods", "text": "How can I pay?", "kind": "paraphrase"}
+{"intent": "track_order", "text": "How do I track my order?", "kind": "canonical"}
+{"intent": "track_order", "text": "Where is my order?", "kind": "paraphrase"}
+{"intent": "track_order", "text": "Can I track my package?", "kind": "paraphrase"}
+{"intent": "track_order", "text": "Is there a tracking number for my shipment?", "kind": "paraphrase"}
+{"intent": "track_order", "text": "How do I see where my delivery is?", "kind": "paraphrase"}
+{"intent": "return_item", "text": "How do I return an item?", "kind": "canonical"}
+{"intent": "return_item", "text": "How can I send something back?", "kind": "paraphrase"}
+{"intent": "return_item", "text": "What is the return process?", "kind": "paraphrase"}
+{"intent": "return_item", "text": "I want to return my purchase", "kind": "paraphrase"}
+{"intent": "return_item", "text": "Steps to return a product", "kind": "paraphrase"}
+{"intent": "contact_support", "text": "How do I contact customer support?", "kind": "canonical"}
+{"intent": "contact_support", "text": "How can I reach support?", "kind": "paraphrase"}
+{"intent": "contact_support", "text": "What is your support phone number?", "kind": "paraphrase"}
+{"intent": "contact_support", "text": "How do I talk to a human?", "kind": "paraphrase"}
+{"intent": "contact_support", "text": "Is there a customer service email?", "kind": "paraphrase"}
+{"intent": "business_hours", "text": "What are your business hours?", "kind": "canonical"}
+{"intent": "business_hours", "text": "When are you open?", "kind": "paraphrase"}
+{"intent": "business_hours", "text": "What time does support open?", "kind": "paraphrase"}
+{"intent": "business_hours", "text": "Are you open on weekends?", "kind": "paraphrase"}
+{"intent": "business_hours", "text": "What are your opening hours?", "kind": "paraphrase"}
+{"intent": "student_discount", "text": "Is there a student discount?", "kind": "canonical"}
+{"intent": "student_discount", "text": "Do you offer discounts for students?", "kind": "paraphrase"}
+{"intent": "student_discount", "text": "Can students get a cheaper price?", "kind": "paraphrase"}
+{"intent": "student_discount", "text": "Student pricing?", "kind": "paraphrase"}
+{"intent": "student_discount", "text": "Do you have an education discount?", "kind": "paraphrase"}
+{"intent": "delete_account", "text": "How do I delete my account?", "kind": "canonical"}
+{"intent": "delete_account", "text": "How can I remove my account?", "kind": "paraphrase"}
+{"intent": "delete_account", "text": "Delete my profile", "kind": "paraphrase"}
+{"intent": "delete_account", "text": "I want to close my account permanently", "kind": "paraphrase"}
+{"intent": "delete_account", "text": "How do I erase all my data and account?", "kind": "paraphrase"}
+{"intent": "change_plan", "text": "How do I upgrade my plan?", "kind": "canonical"}
+{"intent": "change_plan", "text": "How can I switch to a higher plan?", "kind": "paraphrase"}
+{"intent": "change_plan", "text": "Upgrade my subscription", "kind": "paraphrase"}
+{"intent": "change_plan", "text": "Can I move to the premium tier?", "kind": "paraphrase"}
+{"intent": "change_plan", "text": "How do I get more features on my account?", "kind": "paraphrase"}
+{"intent": "invoice", "text": "Where can I find my invoice?", "kind": "canonical"}
+{"intent": "invoice", "text": "How do I download my invoice?", "kind": "paraphrase"}
+{"intent": "invoice", "text": "I need a receipt for my payment", "kind": "paraphrase"}
+{"intent": "invoice", "text": "Where are my billing documents?", "kind": "paraphrase"}
+{"intent": "invoice", "text": "Can I get a copy of my bill?", "kind": "paraphrase"}
+{"intent": "billing_address", "text": "How do I change my billing address?", "kind": "canonical"}
+{"intent": "billing_address", "text": "How can I update my billing address?", "kind": "paraphrase"}
+{"intent": "billing_address", "text": "Edit the address on my invoices", "kind": "paraphrase"}
+{"intent": "billing_address", "text": "My billing address is wrong", "kind": "paraphrase"}
+{"intent": "billing_address", "text": "Where do I set the address used for payments?", "kind": "paraphrase"}
+{"intent": "two_factor", "text": "How do I enable two-factor authentication?", "kind": "canonical"}
+{"intent": "two_factor", "text": "How can I turn on 2FA?", "kind": "paraphrase"}
+{"intent": "two_factor", "text": "Set up two step verification", "kind": "paraphrase"}
+{"intent": "two_factor", "text": "Does my account support 2FA?", "kind": "paraphrase"}
+{"intent": "two_factor", "text": "How do I add an authenticator app?", "kind": "paraphrase"}
+{"intent": "data_export", "text": "How do I export my data?", "kind": "canonical"}
+{"intent": "data_export", "text": "Can I download all my data?", "kind": "paraphrase"}
+{"intent": "data_export", "text": "Export my account data", "kind": "paraphrase"}
+{"intent": "data_export", "text": "How do I get a copy of my information?", "kind": "paraphrase"}
+{"intent": "data_export", "text": "Is there a data export feature?", "kind": "paraphrase"}
+{"intent": "free_trial", "text": "Is there a free trial?", "kind": "canonical"}
+{"intent": "free_trial", "text": "Can I try it for free?", "kind": "paraphrase"}
+{"intent": "free_trial", "text": "Do you offer a trial period?", "kind": "paraphrase"}
+{"intent": "free_trial", "text": "How long is the free trial?", "kind": "paraphrase"}
+{"intent": "free_trial", "text": "Can I test the product before paying?", "kind": "paraphrase"}
+{"intent": "api_rate_limit", "text": "What are the API rate limits?", "kind": "canonical"}
+{"intent": "api_rate_limit", "text": "How many API requests can I make?", "kind": "paraphrase"}
+{"intent": "api_rate_limit", "text": "API request limit", "kind": "paraphrase"}
+{"intent": "api_rate_limit", "text": "Is there a cap on API calls per minute?", "kind": "paraphrase"}
+{"intent": "api_rate_limit", "text": "How fast can I call your API?", "kind": "paraphrase"}
+{"intent": "change_username", "text": "How do I change my username?", "kind": "canonical"}
+{"intent": "change_username", "text": "Can I rename my account?", "kind": "paraphrase"}
+{"intent": "change_username", "text": "Update my user name", "kind": "paraphrase"}
+{"intent": "change_username", "text": "How do I pick a new handle?", "kind": "paraphrase"}
+{"intent": "change_username", "text": "Where can I edit my display name?", "kind": "paraphrase"}
+{"intent": "gift_cards", "text": "Do you sell gift cards?", "kind": "canonical"}
+{"intent": "gift_cards", "text": "Can I buy a gift card?", "kind": "paraphrase"}
+{"intent": "gift_cards", "text": "Are gift cards available?", "kind": "paraphrase"}
+{"intent": "gift_cards", "text": "How do I purchase a gift voucher?", "kind": "paraphrase"}
+{"intent": "gift_cards", "text": "Can I give your product as a present?", "kind": "paraphrase"}
+{"intent": "order_cancel", "text": "How do I cancel my order?", "kind": "canonical"}
+{"intent": "order_cancel", "text": "Can I cancel my order?", "kind": "paraphrase"}
+{"intent": "order_cancel", "text": "Cancel an order I just placed", "kind": "paraphrase"}
+{"intent": "order_cancel", "text": "I ordered by mistake, how do I undo it?", "kind": "paraphrase"}
+{"intent": "order_cancel", "text": "Stop my order before it ships", "kind": "paraphrase"}
+{"intent": "warranty", "text": "What does the warranty cover?", "kind": "canonical"}
+{"intent": "warranty", "text": "How long is the warranty?", "kind": "paraphrase"}
+{"intent": "warranty", "text": "Is my product under warranty?", "kind": "paraphrase"}
+{"intent": "warranty", "text": "What is your guarantee policy?", "kind": "paraphrase"}
+{"intent": "warranty", "text": "Will you fix it if it breaks?", "kind": "paraphrase"}
+{"intent": "privacy", "text": "How do you use my personal data?", "kind": "canonical"}
+{"intent": "privacy", "text": "What is your privacy policy?", "kind": "paraphrase"}
+{"intent": "privacy", "text": "Do you sell my data?", "kind": "paraphrase"}
+{"intent": "privacy", "text": "How is my information protected?", "kind": "paraphrase"}
+{"intent": "privacy", "text": "Who can see my personal information?", "kind": "paraphrase"}
+{"intent": "language", "text": "Can I change the language?", "kind": "canonical"}
+{"intent": "language", "text": "How do I switch the app language?", "kind": "paraphrase"}
+{"intent": "language", "text": "Is the site available in Spanish?", "kind": "paraphrase"}
+{"intent": "language", "text": "Change interface language", "kind": "paraphrase"}
+{"intent": "language", "text": "How do I set my preferred language?", "kind": "paraphrase"}
+{"intent": "dark_mode", "text": "Is there a dark mode?", "kind": "canonical"}
+{"intent": "dark_mode", "text": "How do I enable dark mode?", "kind": "paraphrase"}
+{"intent": "dark_mode", "text": "Can I use a dark theme?", "kind": "paraphrase"}
+{"intent": "dark_mode", "text": "Switch to dark theme", "kind": "paraphrase"}
+{"intent": "dark_mode", "text": "How do I make the screen darker?", "kind": "paraphrase"}
+{"intent": "invite_team", "text": "How do I invite my team?", "kind": "canonical"}
+{"intent": "invite_team", "text": "How can I add team members?", "kind": "paraphrase"}
+{"intent": "invite_team", "text": "Invite colleagues to my workspace", "kind": "paraphrase"}
+{"intent": "invite_team", "text": "Add a user to my organization", "kind": "paraphrase"}
+{"intent": "invite_team", "text": "How do I share access with coworkers?", "kind": "paraphrase"}
+{"intent": "pricing", "text": "How much does it cost?", "kind": "canonical"}
+{"intent": "pricing", "text": "What are your prices?", "kind": "paraphrase"}
+{"intent": "pricing", "text": "What is the price of the pro plan?", "kind": "paraphrase"}
+{"intent": "pricing", "text": "Pricing details", "kind": "paraphrase"}
+{"intent": "pricing", "text": "How expensive is a subscription?", "kind": "paraphrase"}
+{"intent": "mobile_app", "text": "Do you have a mobile app?", "kind": "canonical"}
+{"intent": "mobile_app", "text": "Is there an iPhone app?", "kind": "paraphrase"}
+{"intent": "mobile_app", "text": "Can I use it on Android?", "kind": "paraphrase"}
+{"intent": "mobile_app", "text": "Is there an app for my phone?", "kind": "paraphrase"}
+{"intent": "mobile_app", "text": "Where can I download the mobile application?", "kind": "paraphrase"}
+{"intent": "negative_00", "text": "What is your shipping policy?", "kind": "negative"}
+{"intent": "negative_01", "text": "How do I reset my router?", "kind": "negative"}
+{"intent": "negative_02", "text": "How do I change my phone number?", "kind": "negative"}
+{"intent": "negative_03", "text": "How do I pause my subscription?", "kind": "negative"}
+{"intent": "negative_04", "text": "How long does a refund take?", "kind": "negative"}
+{"intent": "negative_05", "text": "Do you ship batteries internationally?", "kind": "negative"}
+{"intent": "negative_06", "text": "What payment methods do you accept for refunds?", "kind": "negative"}
+{"intent": "negative_07", "text": "How do I track my refund?", "kind": "negative"}
+{"intent": "negative_08", "text": "How do I return a gift card?", "kind": "negative"}
+{"intent": "negative_09", "text": "How do I contact the sales team?", "kind": "negative"}
+{"intent": "negative_10", "text": "What are your holiday hours?", "kind": "negative"}
+{"intent": "negative_11", "text": "Is there a senior discount?", "kind": "negative"}
+{"intent": "negative_12", "text": "How do I delete a message?", "kind": "negative"}
+{"intent": "negative_13", "text": "How do I downgrade my plan?", "kind": "negative"}
+{"intent": "negative_14", "text": "Where can I find my order number?", "kind": "negative"}
+{"intent": "negative_15", "text": "How do I change my shipping address?", "kind": "negative"}
+{"intent": "negative_16", "text": "How do I disable two-factor authentication?", "kind": "negative"}
+{"intent": "negative_17", "text": "How do I import my data?", "kind": "negative"}
+{"intent": "negative_18", "text": "Is there a free plan?", "kind": "negative"}
+{"intent": "negative_19", "text": "What are the API pricing tiers?", "kind": "negative"}
+{"intent": "negative_20", "text": "How do I change my password?", "kind": "negative"}
+{"intent": "negative_21", "text": "Do you accept gift cards as payment?", "kind": "negative"}
+{"intent": "negative_22", "text": "How do I cancel my account?", "kind": "negative"}
+{"intent": "negative_23", "text": "What does the warranty not cover?", "kind": "negative"}
+{"intent": "negative_24", "text": "How do you use cookies?", "kind": "negative"}
+{"intent": "negative_25", "text": "Can I change the currency?", "kind": "negative"}
+{"intent": "negative_26", "text": "Is there a light mode?", "kind": "negative"}
+{"intent": "negative_27", "text": "How do I remove a team member?", "kind": "negative"}
+{"intent": "negative_28", "text": "How much does shipping cost?", "kind": "negative"}
+{"intent": "negative_29", "text": "Do you have a desktop app?", "kind": "negative"}

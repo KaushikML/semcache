@@ -15,3 +15,4 @@ data/
 !tests/data/
 .claude
 
+!bench/data/
