@@ -1,0 +1,24 @@
+date: 20261023T181110Z
+commit: bad7b88-dirty
+cpu: 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz
+cores: 6
+build: RelWithDebInfo
+disk: /dev/sdd (WSL2 ext4 virtual disk)
+
+== 200 partitions x 100 entries (brute force)
+entries=20000 partitions=200 hnsw_partitions=0 response_bytes=2000
+insert via writer (WAL on):      2.43 s  (8237 inserts/s)
+WAL size:                        73.6 MB
+recover from WAL:                0.26 s
+write snapshot:                  1.58 s
+snapshot size:                   73.4 MB
+recover from snapshot:           0.25 s  (20000 entries loaded)
+
+== 1 partition x 20000 entries (HNSW after 5000)
+entries=20000 partitions=1 hnsw_partitions=1 response_bytes=2000
+insert via writer (WAL on):     19.56 s  (1022 inserts/s)
+WAL size:                        73.6 MB
+recover from WAL:               17.13 s
+write snapshot:                  1.21 s
+snapshot size:                   73.4 MB
+recover from snapshot:          17.69 s  (20000 entries loaded)
