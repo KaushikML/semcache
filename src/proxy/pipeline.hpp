@@ -33,6 +33,12 @@ struct CacheServices {
   Coalescer* coalescer = nullptr;
 };
 
+// What the HTTP layer extracted from the request besides the body.
+struct ChatOptions {
+  bool bypass = false;   // X-Semcache-Bypass
+  std::string tags;      // X-Semcache-Tags, raw
+};
+
 struct PipelineOutcome {
   CacheResult result = CacheResult::bypass;
   unsigned status = 0;
@@ -51,7 +57,8 @@ class RequestPipeline {
 
   RequestPipeline(const Config& cfg, Upstream& upstream, ProxyMetrics& metrics, CacheServices cache);
 
-  Task<PipelineOutcome> handle_chat(const Tenant& tenant, std::string body, bool bypass_header, ResponseWriter& out,
+  // Parameters by value: the caller's temporaries must not be referenced across suspension.
+  Task<PipelineOutcome> handle_chat(Tenant tenant, std::string body, ChatOptions opts, ResponseWriter& out,
                                     Clock::time_point received);
 
  private:

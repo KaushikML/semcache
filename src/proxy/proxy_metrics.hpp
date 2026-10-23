@@ -31,7 +31,7 @@ struct ProxyMetrics {
   Gauge& embedder_ready;
 
   // Cache path (design §9).
-  std::array<Counter*, 7> bypass{};  // indexed by NotCacheable
+  std::array<Counter*, 8> bypass{};  // indexed by NotCacheable
   Histogram& lookup_seconds;         // vector search only
   Histogram& embed_seconds;          // tokenize + ORT Run
   Histogram& best_similarity;        // best score per semantic lookup, for threshold tuning (Phase 7)

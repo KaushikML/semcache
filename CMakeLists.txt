@@ -29,6 +29,11 @@ add_library(semcache_core STATIC
   src/cache/cache_store.cpp
   src/cache/cache_writer.cpp
   src/coalesce/coalescer.cpp
+  src/persist/codec.cpp
+  src/persist/crc32c.cpp
+  src/persist/files.cpp
+  src/persist/log_format.cpp
+  src/persist/persistence.cpp
   src/cache/completion_codec.cpp
   src/cache/context_key.cpp
   src/index/simd.cpp
@@ -83,6 +88,9 @@ if(SEMCACHE_BUILD_BENCH)
   add_executable(semcache_hnsw_eval bench/hnsw_eval.cpp)
   target_link_libraries(semcache_hnsw_eval PRIVATE semcache_core)
   semcache_set_warnings(semcache_hnsw_eval)
+  add_executable(semcache_persist_eval bench/persist_eval.cpp)
+  target_link_libraries(semcache_persist_eval PRIVATE semcache_core)
+  semcache_set_warnings(semcache_persist_eval)
 endif()
 
 if(SEMCACHE_BUILD_TESTS)

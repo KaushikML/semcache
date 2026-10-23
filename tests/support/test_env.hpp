@@ -21,6 +21,7 @@
 #include "metrics/metrics.hpp"
 #include "mock_upstream.hpp"
 #include "net/asio.hpp"
+#include "persist/persistence.hpp"
 #include "proxy/proxy_server.hpp"
 #include "upstream/http_upstream.hpp"
 
@@ -49,6 +50,7 @@ inline Config base_config(std::uint16_t upstream_port) {
   cfg.upstream.first_byte_timeout = std::chrono::milliseconds(5000);
   cfg.upstream.idle_timeout = std::chrono::milliseconds(5000);
   cfg.upstream.total_timeout = std::chrono::milliseconds(10000);
+  cfg.persistence.enabled = false;  // tests that need it pass a temp dir via the tweak
   cfg.limits.rps = 10000;
   cfg.limits.burst = 10000;
   cfg.tenants.push_back({"test", "UNUSED", sha256(kTestKey)});
@@ -88,7 +90,12 @@ class TestEnv {
     if (cfg_.coalescer.enabled) {
       coalescer_ = std::make_unique<Coalescer>(cfg_.coalescer, cfg_.upstream.max_response_bytes, registry_);
     }
-    writer_ = std::make_unique<CacheWriter>(*store_, cfg_.cache.writer_queue_capacity, registry_);
+    if (cfg_.persistence.enabled) {
+      persistence_ = std::make_unique<Persistence>(cfg_.persistence, Sha256Digest{}, registry_);
+      recovery_ = persistence_->recover(*store_);
+      store_->set_observer(persistence_.get());
+    }
+    writer_ = std::make_unique<CacheWriter>(*store_, cfg_.cache.writer_queue_capacity, registry_, persistence_.get());
     Embedder* e = embedder == WithEmbedder::fake ? &embedder_ : embedder == WithEmbedder::custom ? custom : nullptr;
     if (e != nullptr) pool_ = std::make_unique<WorkerPool>("test-embed", cfg_.embedder.threads, cfg_.embedder.queue_capacity);
     proxy_ = std::make_unique<ProxyServer>(ioc_, cfg_, *upstream_, CacheServices{store_.get(), e, pool_.get(), writer_.get(), coalescer_.get()},
@@ -125,6 +132,8 @@ class TestEnv {
   [[nodiscard]] CacheStore& store() { return *store_; }
   [[nodiscard]] Coalescer* coalescer() { return coalescer_.get(); }
   [[nodiscard]] CacheWriter& writer() { return *writer_; }
+  [[nodiscard]] Persistence* persistence() { return persistence_.get(); }
+  [[nodiscard]] const RecoveryReport& recovery() const { return recovery_; }
   // Waits until every cache insert submitted so far is applied (inserts are asynchronous).
   void flush() { writer_->flush(); }
 
@@ -144,6 +153,8 @@ class TestEnv {
   std::unique_ptr<HttpUpstream> upstream_;
   std::unique_ptr<CacheStore> store_;
   std::unique_ptr<Coalescer> coalescer_;  // before writer_: outlives its after-insert callbacks
+  std::unique_ptr<Persistence> persistence_;  // before writer_: the writer's hook
+  RecoveryReport recovery_;
   std::unique_ptr<CacheWriter> writer_;
   std::unique_ptr<WorkerPool> pool_;
   std::unique_ptr<ProxyServer> proxy_;

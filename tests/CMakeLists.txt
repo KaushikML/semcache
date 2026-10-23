@@ -16,6 +16,7 @@ add_executable(semcache_unit_tests
   unit/coalescer_test.cpp
   unit/completion_codec_test.cpp
   unit/context_key_test.cpp
+  unit/persistence_test.cpp
   unit/simd_test.cpp
   unit/vector_index_test.cpp
   unit/hnsw_test.cpp
@@ -42,6 +43,7 @@ add_executable(semcache_integration_tests
   integration/failure_test.cpp
   integration/cache_test.cpp
   integration/herd_test.cpp
+  integration/restart_purge_test.cpp
   integration/semantic_model_test.cpp
 )
 target_include_directories(semcache_integration_tests PRIVATE .)

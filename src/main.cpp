@@ -8,6 +8,7 @@
 #include "cache/cache_store.hpp"
 #include "cache/cache_writer.hpp"
 #include "coalesce/coalescer.hpp"
+#include "persist/persistence.hpp"
 #include "common/worker_pool.hpp"
 #include "config/config.hpp"
 #include "embed/onnx_embedder.hpp"
@@ -111,7 +112,25 @@ int main(int argc, char** argv) {
   // Declared before the writer so it outlives the writer thread's after-insert callbacks.
   std::unique_ptr<Coalescer> coalescer;
   if (cfg.coalescer.enabled) coalescer = std::make_unique<Coalescer>(cfg.coalescer, cfg.upstream.max_response_bytes, registry);
-  CacheWriter writer(store, cfg.cache.writer_queue_capacity, registry);
+  // Recovery runs before the writer exists; the writer then owns all mutations and WAL I/O.
+  std::unique_ptr<Persistence> persistence;
+  if (cfg.persistence.enabled) {
+    const auto fingerprint = embedder ? file_fingerprint(cfg.embedder.model_path) : Sha256Digest{};
+    persistence = std::make_unique<Persistence>(cfg.persistence, fingerprint, registry);
+    const auto r = persistence->recover(store);
+    log::info("cache recovered", {{"dir", cfg.persistence.dir},
+                                  {"entries", r.loaded},
+                                  {"snapshot_entries", r.snapshot_entries},
+                                  {"wal_records", r.wal_records},
+                                  {"skipped", r.skipped},
+                                  {"snapshot_corrupt", r.snapshot_corrupt},
+                                  {"wal_truncated", r.wal_truncated},
+                                  {"embeddings_dropped", r.fingerprint_mismatch},
+                                  {"seconds", r.seconds},
+                                  {"persistence_enabled", persistence->enabled()}});
+    store.set_observer(persistence.get());
+  }
+  CacheWriter writer(store, cfg.cache.writer_queue_capacity, registry, persistence.get());
   const CacheServices cache{&store, embedder.get(), embed_pool.get(), &writer, coalescer.get()};
 
   std::unique_ptr<ProxyServer> server;
@@ -153,7 +172,7 @@ int main(int argc, char** argv) {
   for (int i = 1; i < threads; ++i) pool.emplace_back([&ioc] { ioc.run(); });
   ioc.run();
   for (auto& t : pool) t.join();
-  writer.stop();  // applies inserts still queued (persisted from Phase 6)
+  writer.stop();  // applies inserts still queued, then the final WAL sync
   log::info("stopped");
   // If the drain timed out, abandoned coroutine frames are destroyed with `ioc` after `server`;
   // exit without unwinding so they never touch freed state.

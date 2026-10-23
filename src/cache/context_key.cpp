@@ -118,8 +118,32 @@ std::string_view to_string(NotCacheable r) {
     case NotCacheable::multiple_choices: return "multiple_choices";
     case NotCacheable::logprobs: return "logprobs";
     case NotCacheable::temperature: return "temperature";
+    case NotCacheable::invalid_tags: return "invalid_tags";
   }
   return "unknown";
+}
+
+std::optional<std::vector<std::string>> parse_tags(std::string_view header, const CacheConfig& cfg) {
+  std::vector<std::string> tags;
+  auto valid_char = [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+           c == ':' || c == '/' || c == '-';
+  };
+  while (!header.empty()) {
+    const auto comma = header.find(',');
+    auto item = header.substr(0, comma);
+    header = comma == std::string_view::npos ? std::string_view{} : header.substr(comma + 1);
+    while (!item.empty() && item.front() == ' ') item.remove_prefix(1);
+    while (!item.empty() && item.back() == ' ') item.remove_suffix(1);
+    if (item.empty() || item.size() > cfg.max_tag_bytes || !std::all_of(item.begin(), item.end(), valid_char)) {
+      return std::nullopt;
+    }
+    tags.emplace_back(item);
+  }
+  std::sort(tags.begin(), tags.end());
+  tags.erase(std::unique(tags.begin(), tags.end()), tags.end());
+  if (tags.size() > cfg.max_tags_per_entry) return std::nullopt;
+  return tags;
 }
 
 std::string canonical_json(const nlohmann::json& j) {

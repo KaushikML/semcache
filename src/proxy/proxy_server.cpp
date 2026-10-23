@@ -1,6 +1,9 @@
 #include "proxy/proxy_server.hpp"
 
+#include <boost/asio/experimental/concurrent_channel.hpp>
+
 #include <cmath>
+#include <cstdio>
 
 #include "http/beast_response_writer.hpp"
 #include "http/errors.hpp"
@@ -58,6 +61,7 @@ ProxyServer::ProxyServer(net::io_context& ioc, const Config& cfg, Upstream& upst
       listener_(ioc, tcp::endpoint(net::ip::make_address(cfg.server.host), cfg.server.port),
                 [this](beast::tcp_stream s, tcp::endpoint r) { return session(std::move(s), r); }) {
   metrics_.embedder_ready.set(cache_.embedder != nullptr ? 1 : 0);
+  if (!cfg.admin_key.empty()) admin_key_digest_ = sha256(cfg.admin_key.reveal());
 }
 
 Task<void> ProxyServer::session(beast::tcp_stream stream, tcp::endpoint remote) {
@@ -106,6 +110,13 @@ Task<bool> ProxyServer::route(beast::tcp_stream& stream, Request& req, const tcp
                     cache_.embedder != nullptr ? R"({"status":"ready","degraded":[]})"
                                          : R"({"status":"degraded","degraded":["embedder"]})",
                     kNoHeaders);
+  } else if (path == "/admin/purge" && admin_key_digest_) {
+    if (req.method() != http::verb::post) {
+      const HeaderList allow = {{"Allow", "POST"}};
+      co_await w.send(405, kJson, openai_error_json("use POST", "invalid_request_error"), allow);
+    } else {
+      co_return co_await handle_purge(w, req);
+    }
   } else if (path == "/stats" && req.method() == http::verb::get) {
     co_await w.send(200, kJson, stats_json(), kNoHeaders);
   } else if (path == "/metrics" && req.method() == http::verb::get) {
@@ -152,8 +163,8 @@ Task<bool> ProxyServer::handle_chat(beast::tcp_stream& stream, Request& req, con
 
   const auto body_bytes = req.body().size();
   const auto bypass = req["X-Semcache-Bypass"];
-  const bool bypass_header = bypass == "1" || bypass == "true";
-  auto outcome = co_await pipeline_.handle_chat(*tenant, std::move(req.body()), bypass_header, w, received);
+  ChatOptions opts{.bypass = bypass == "1" || bypass == "true", .tags = std::string(req["X-Semcache-Tags"])};
+  auto outcome = co_await pipeline_.handle_chat(*tenant, std::move(req.body()), std::move(opts), w, received);
   metrics_.requests[static_cast<std::size_t>(outcome.result)]->inc();
   metrics_.request_seconds.observe(ms_since(received) / 1000.0);
 
@@ -171,6 +182,81 @@ Task<bool> ProxyServer::handle_chat(beast::tcp_stream& stream, Request& req, con
   if (!outcome.store.empty()) fields["store"] = outcome.store;
   log::info("request", std::move(fields));
   co_return outcome.keep_alive && w.healthy() && req.keep_alive();
+}
+
+namespace {
+
+// Parses the purge request body; returns an error message, or empty on success.
+std::string parse_purge_filter(const std::string& raw, PurgeFilter& filter) {
+  auto body = nlohmann::json::parse(raw, nullptr, /*allow_exceptions=*/false);
+  if (!body.is_object()) return "body must be a JSON object";
+  for (const auto& [k, v] : body.items()) {
+    if (!v.is_string()) return "filter values must be strings";
+    const auto value = v.get<std::string>();
+    if (k == "tenant") {
+      filter.tenant = value;
+    } else if (k == "tag") {
+      filter.tag = value;
+    } else if (k == "context") {
+      ContextKey ctx{};
+      if (value.size() != 2 * ctx.size()) return "context must be 64 hex characters";
+      for (std::size_t i = 0; i < ctx.size(); ++i) {
+        unsigned byte = 0;
+        if (std::sscanf(value.c_str() + 2 * i, "%2x", &byte) != 1) return "context must be hex";
+        ctx[i] = static_cast<std::uint8_t>(byte);
+      }
+      filter.context = ctx;
+    } else {
+      return "unknown filter field: " + k;
+    }
+  }
+  if (filter.empty()) return "give at least one of tenant, tag, context";
+  return {};
+}
+
+}  // namespace
+
+// Named locals before each co_await: GCC 13 ICEs on temporaries inside co_await expressions.
+Task<bool> ProxyServer::handle_purge(BeastResponseWriter& w, Request& req) {
+  constexpr std::string_view kBearer = "Bearer ";
+  const auto auth = std::string_view(req[http::field::authorization]);
+  if (!auth.starts_with(kBearer) || sha256(auth.substr(kBearer.size())) != *admin_key_digest_) {
+    metrics_.auth_failures.inc();
+    const auto msg = openai_error_json("invalid admin key", "invalid_request_error", "invalid_api_key");
+    co_await w.send(401, kJson, msg, kNoHeaders);
+    co_return w.healthy() && req.keep_alive();
+  }
+  PurgeFilter filter;
+  if (const auto error = parse_purge_filter(req.body(), filter); !error.empty()) {
+    const auto msg = openai_error_json(error, "invalid_request_error");
+    co_await w.send(400, kJson, msg, kNoHeaders);
+    co_return w.healthy() && req.keep_alive();
+  }
+
+  // Runs on the writer thread (the only mutator); reply once applied, so later lookups cannot
+  // see purged entries (design §3, consistency).
+  using Done = net::experimental::concurrent_channel<void(boost::system::error_code, std::size_t)>;
+  auto done = std::make_shared<Done>(co_await net::this_coro::executor, 1);
+  const bool queued = cache_.writer != nullptr &&
+                      cache_.writer->submit_purge(filter, [done](std::size_t n) { done->try_send(boost::system::error_code{}, n); });
+  if (!queued) {
+    const HeaderList retry = {{"Retry-After", "1"}};
+    const auto msg = openai_error_json("cache writer unavailable or busy, retry later", "server_error");
+    co_await w.send(503, kJson, msg, retry);
+    co_return w.healthy() && req.keep_alive();
+  }
+  auto received = co_await done->async_receive(use_nothrow);
+  if (std::get<0>(received)) co_return false;  // shutting down
+  const auto purged = std::get<1>(received);
+  log::info("purge", {{"purged", purged},
+                      {"tenant", filter.tenant.value_or("")},
+                      {"tag", filter.tag.value_or("")},
+                      {"by_context", filter.context.has_value()}});
+  nlohmann::json reply;
+  reply["purged"] = purged;
+  const auto reply_body = reply.dump();
+  co_await w.send(200, kJson, reply_body, kNoHeaders);
+  co_return w.healthy() && req.keep_alive();
 }
 
 std::string ProxyServer::stats_json() const {

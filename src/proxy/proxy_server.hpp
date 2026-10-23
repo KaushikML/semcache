@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <optional>
 
 #include "auth/tenants.hpp"
 #include "http/beast_response_writer.hpp"
@@ -35,6 +36,8 @@ class ProxyServer {
   // Returns whether the connection may be kept alive.
   Task<bool> route(beast::tcp_stream& stream, Request& req, const tcp::endpoint& remote);
   Task<bool> handle_chat(beast::tcp_stream& stream, Request& req, const tcp::endpoint& remote);
+  // POST /admin/purge {"tenant"?, "tag"?, "context"? (64 hex)} with the admin key (design §10).
+  Task<bool> handle_purge(BeastResponseWriter& w, Request& req);
   [[nodiscard]] std::string stats_json() const;
   Task<bool> reject(BeastResponseWriter& w, const Request& req, std::uint64_t request_id,
                     const tcp::endpoint& remote, unsigned status, std::string_view message,
@@ -45,6 +48,7 @@ class ProxyServer {
   CacheServices cache_;
   ProxyMetrics metrics_;
   TenantDirectory tenants_;
+  std::optional<Sha256Digest> admin_key_digest_;  // unset => /admin/* disabled (404)
   RateLimiter tenant_limiter_;
   RequestPipeline pipeline_;
   std::atomic<int> inflight_{0};

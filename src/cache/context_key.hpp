@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "common/sha256.hpp"
 #include "config/config.hpp"
@@ -26,6 +27,7 @@ enum class NotCacheable {
   multiple_choices,  // n > 1
   logprobs,
   temperature,  // above cache.max_temperature
+  invalid_tags,  // X-Semcache-Tags present but malformed: never store an entry that cannot be purged
 };
 
 [[nodiscard]] std::string_view to_string(NotCacheable r);
@@ -44,6 +46,11 @@ struct Classification {
 // `body` must be a JSON object with a non-empty `messages` array (validated by the caller).
 [[nodiscard]] Classification classify_request(const nlohmann::json& body, std::string_view tenant_id,
                                               const CacheConfig& cfg, bool bypass_header);
+
+// Parses X-Semcache-Tags ("a,b,c"): trimmed, non-empty, [A-Za-z0-9._:/-], at most
+// cache.max_tag_bytes each and cache.max_tags_per_entry in total; duplicates removed, sorted.
+// Empty header => no tags. nullopt => malformed.
+[[nodiscard]] std::optional<std::vector<std::string>> parse_tags(std::string_view header, const CacheConfig& cfg);
 
 // Deterministic JSON: object keys sorted, no whitespace, integers as integers, floats in shortest
 // round-trip form (so 1 and 1.0 encode the same). Exposed for tests.

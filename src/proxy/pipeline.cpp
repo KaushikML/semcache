@@ -206,8 +206,9 @@ Task<RequestPipeline::Lookup> RequestPipeline::semantic_lookup(const CacheableRe
   co_return out;
 }
 
-Task<PipelineOutcome> RequestPipeline::handle_chat(const Tenant& tenant, std::string body, bool bypass_header,
+Task<PipelineOutcome> RequestPipeline::handle_chat(Tenant tenant, std::string body, ChatOptions opts,
                                                    ResponseWriter& out, Clock::time_point received) {
+  const auto started = CacheClock::now();
   PipelineOutcome outcome;
   auto request = nlohmann::json::parse(body, nullptr, /*allow_exceptions=*/false);
   if (!valid_chat_request(request)) {
@@ -225,7 +226,9 @@ Task<PipelineOutcome> RequestPipeline::handle_chat(const Tenant& tenant, std::st
     co_await forward(std::move(body), CacheResult::bypass, std::nullopt, out, received, outcome);
     co_return outcome;
   }
-  auto cls = classify_request(request, tenant.id, cfg_.cache, bypass_header);
+  auto cls = classify_request(request, tenant.id, cfg_.cache, opts.bypass);
+  auto tags = parse_tags(opts.tags, cfg_.cache);
+  if (cls.request && !tags) cls = Classification{std::nullopt, NotCacheable::invalid_tags};
   if (!cls.request) {
     metrics_.bypass[static_cast<std::size_t>(cls.reason)]->inc();
     outcome.bypass_reason = std::string(to_string(cls.reason));
@@ -303,6 +306,8 @@ Task<PipelineOutcome> RequestPipeline::handle_chat(const Tenant& tenant, std::st
   entry.tenant = tenant.id;
   entry.prompt = req.embed_text;
   entry.embedding = lk.embedding;
+  entry.tags = std::move(*tags);
+  entry.request_started = started;
   CacheWriter::AfterInsert after_insert;
   if (guard.flight) {
     after_insert = [c = guard.coalescer, key, f = guard.flight](InsertOutcome) { c->retire(key, f); };
