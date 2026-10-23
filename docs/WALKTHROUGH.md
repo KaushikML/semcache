@@ -1,12 +1,12 @@
-# semcache — complete walkthrough (Phases 0–6)
+# semcache — complete walkthrough (Phases 0–7)
 
 This document explains everything built so far: the idea, the design, every file, every library,
 the C++ techniques used, how a request flows through the code, how concurrency and failures are
 handled, how it is tested, and what was measured. Read it top to bottom once; afterwards use the
 file map (§4) as an index.
 
-Status at time of writing: Phases 0–5 done; Phase 6 (persistence + purge) implemented and awaiting
-review. 221 automated tests pass in debug, AddressSanitizer/UBSan and ThreadSanitizer builds.
+Status at time of writing: Phases 0–6 done; Phase 7 (evaluation) implemented and awaiting review.
+221 automated tests pass in debug, AddressSanitizer/UBSan and ThreadSanitizer builds.
 
 ---
 
@@ -26,15 +26,16 @@ review. 221 automated tests pass in debug, AddressSanitizer/UBSan and ThreadSani
 12. [Phase 4 — coalescing and the writer thread](#12-phase-4--coalescing-and-the-writer-thread)
 13. [Phase 5 — the HNSW index](#13-phase-5--the-hnsw-index)
 14. [Phase 6 — persistence and purge](#14-phase-6--persistence-and-purge)
-15. [Concurrency model as implemented](#15-concurrency-model-as-implemented)
-16. [Failure handling: "fail open"](#16-failure-handling-fail-open)
-17. [Configuration reference](#17-configuration-reference)
-18. [Observability: logs, metrics, endpoints](#18-observability-logs-metrics-endpoints)
-19. [Testing: how we know it works](#19-testing-how-we-know-it-works)
-20. [Measurements so far](#20-measurements-so-far)
-21. [Known weaknesses and what comes next](#21-known-weaknesses-and-what-comes-next)
-22. [How to build, run and test](#22-how-to-build-run-and-test)
-23. [Glossary](#23-glossary)
+15. [Phase 7 — evaluation](#15-phase-7--evaluation)
+16. [Concurrency model as implemented](#16-concurrency-model-as-implemented)
+17. [Failure handling: "fail open"](#17-failure-handling-fail-open)
+18. [Configuration reference](#18-configuration-reference)
+19. [Observability: logs, metrics, endpoints](#19-observability-logs-metrics-endpoints)
+20. [Testing: how we know it works](#20-testing-how-we-know-it-works)
+21. [Measurements so far](#21-measurements-so-far)
+22. [Known weaknesses and what comes next](#22-known-weaknesses-and-what-comes-next)
+23. [How to build, run and test](#23-how-to-build-run-and-test)
+24. [Glossary](#24-glossary)
 
 ---
 
@@ -78,14 +79,15 @@ A cached answer may be reused only if **both** hold:
    a list of 384 numbers produced by a small neural network (all-MiniLM-L6-v2) such that
    sentences with similar meaning get vectors pointing in similar directions. Similarity is
    measured by **cosine similarity** (1.0 = identical direction). If the best stored question in
-   the same context has cosine ≥ `similarity_threshold` (default 0.90), it is a HIT.
+   the same context has cosine ≥ `similarity_threshold` (default 0.97, chosen from measurements in
+   Phase 7 — §15), it is a HIT.
 
 There is also a shortcut: if the final message is *literally* the same (after Unicode
 normalization and trimming), it is an **exact HIT** and the neural network is not even run.
 
 Example measured with the real model:
 
-| Stored question | New question | Cosine | Result (threshold 0.90) |
+| Stored question | New question | Cosine | Result (threshold 0.97) |
 |---|---|---:|---|
 | How do I reset my password? | How can I reset my password? | 0.9917 | HIT |
 | What is your refund policy? | what's your refund policy | 0.9843 | HIT |
@@ -241,6 +243,11 @@ cache can only ever remove work, never break a request.
 |---|---|
 | `requirements.txt` | Pinned Python packages (torch CPU, transformers, sentence-transformers, onnx, onnxruntime, datasets, numpy). |
 | `make_golden.py` | Generates `tests/data/tokenizer_golden.jsonl` (3,125 strings with HuggingFace token ids) and `tests/data/embedding_golden.jsonl` (125 sentences with reference embeddings); also checks that the pinned ONNX file reproduces sentence-transformers. |
+| `prepare_eval.py` | Phase 7: downloads a seeded QQP sample (pinned revision) into `data/eval/` (not committed) and writes the FAQ set. |
+| `faq_eval_data.py` | Phase 7: the synthetic FAQ evaluation set (intents, paraphrases, hard negatives). |
+| `analyze_threshold.py` | Phase 7: hit vs false-hit curves (QQP pairs, FAQ cache replay) and plots. |
+| `run_load_eval.py` | Phase 7: starts the real binaries per scenario and drives the C++ load generator. |
+| `cost_model.py` | Phase 7: savings vs compute, from measured rates + labelled assumptions. |
 | `gen_bert_tables.py` | Runs every Unicode code point through HuggingFace's normalizer and pre-tokenizer; writes `src/embed/bert_tables.inc` and `tests/data/normalizer_blocks.txt`; `--diff` mode for debugging mismatches. |
 
 ### `bench/` — benchmarks
@@ -249,10 +256,13 @@ cache can only ever remove work, never break a request.
 |---|---|
 | `embed_bench.cpp` | Google Benchmark: tokenizer speed, single embeds at 16–256 tokens, batching, 1–8 concurrent threads. |
 | `index_bench.cpp` | Google Benchmark: dot product scalar vs AVX2; brute-force search at 1K–100K vectors. |
+| `embed_texts.cpp` | Embeds a JSONL file with the product's `OnnxEmbedder` (multi-threaded) → float32 file. |
+| `loadgen.cpp` | Closed-loop HTTP load generator: modes cycle / case / once / herd / mix; latency per `X-Semcache` result. |
+| `data/faq_eval.jsonl` | The committed FAQ evaluation set. |
 | `persist_eval.cpp` | WAL replay, snapshot write and snapshot load times and sizes for N entries. |
 | `hnsw_eval.cpp` | Brute force vs HNSW per partition size: recall@10, p50/p99 latency for several `ef`, build time, memory. |
 | `run_embed_bench.sh` | Runs the embed benchmark, saves JSON plus machine details. |
-| `results/phase2/`, `phase3/`, `phase5/`, `phase6/` | Raw JSON results, machine info, and a README with the tables and takeaways. |
+| `results/phase2/` … `phase7/` | Raw JSON results, machine info, and a README with the tables and takeaways. |
 
 ### `tests/`
 
@@ -264,7 +274,7 @@ cache can only ever remove work, never break a request.
 | `support/recording_writer.hpp` | A `ResponseWriter` that just records calls, for coalescer tests without sockets. |
 | `support/model_paths.hpp` | Paths to the real model and golden files. |
 | `sanitizers/lsan.supp`, `tsan.supp` | Narrow suppressions for noise from inside the prebuilt ONNX Runtime library. |
-| `unit/*.cpp`, `integration/*.cpp` | The tests (§19). |
+| `unit/*.cpp`, `integration/*.cpp` | The tests (§20). |
 | `data/` | Golden files generated by the Python tools. |
 
 ---
@@ -438,6 +448,7 @@ context → options → decision → trade-offs.
 | 009 | Coalescing on exact flight key; near-duplicate coalescing optional (Phase 4). |
 | 010 | Dashboard as static files served by the binary (Phase 8). |
 | 011 | Use the ONNX export published with the model, pinned by revision + SHA-256 (no torch export step). |
+| 012 | Default similarity threshold 0.97: the lowest with ≤ 1% false hits on QQP's look-alike non-duplicates. |
 
 ---
 
@@ -1127,7 +1138,96 @@ integration test.
 
 ---
 
-## 15. Concurrency model as implemented
+## 15. Phase 7 — evaluation
+
+The question Phase 7 answers: **does it work, how well, and at what cost?** All results are in
+`bench/results/phase7/README.md`; everything is reproducible from the commands listed there.
+
+### 15.1 Data
+
+- **QQP** (Quora Question Pairs, GLUE): 10,000 seeded pairs of real user questions labelled
+  "duplicate" (same meaning) or not; its non-duplicates are often about the same topic, which
+  makes them good look-alike tests. Downloaded at a pinned revision into the git-ignored `data/`
+  (Quora's terms), never committed.
+- **FAQ set** (`bench/data/faq_eval.jsonl`, committed): 30 support intents, each a canonical
+  question + 4 paraphrases (from "How can I…" to completely different words), and 30 **hard
+  negatives** that reuse an intent's words but mean something else ("How do I *pause* my
+  subscription?" vs "…*cancel*…").
+- All texts are embedded by **the product's C++ embedder** (`semcache_embed_texts`), so the curves
+  describe semcache itself.
+
+### 15.2 Choosing the threshold (the most important result)
+
+Two views:
+- **QQP pairs:** at threshold t, *recall* = share of duplicate pairs scoring ≥ t (hits the cache
+  should make); *false-hit rate* = share of non-duplicate pairs scoring ≥ t (wrong answers it
+  would serve).
+- **FAQ cache replay:** the cache's real behaviour — seed with the canonical questions, then each
+  paraphrase/negative either HITs its nearest stored question (a false hit if that is another
+  intent) or MISSes and is stored.
+
+| threshold | QQP recall | QQP false-hit | FAQ hit rate | FAQ false-hit |
+|---:|---:|---:|---:|---:|
+| 0.80 | 0.763 | 0.211 | 0.180 | 0.047 |
+| 0.90 (old placeholder) | 0.425 | 0.063 | 0.040 | 0.007 |
+| **0.97 (new default)** | **0.124** | **0.007** | 0.027 | 0.007 |
+
+Rule (ADR-012): the lowest threshold where ≤ 1% of look-alike non-duplicates would get a cached
+answer → **0.97**. A wrong answer is worse than a missed saving, so this is a false-hit budget,
+not an accuracy optimum.
+
+What it reveals about all-MiniLM-L6-v2 (the honest part):
+- it catches **near-rewordings** ("How can I cancel…" vs "How do I cancel…" = 0.996);
+- it misses real paraphrases ("How do I talk to a human?" vs "How do I contact customer
+  support?" = 0.215; median paraphrase similarity 0.655);
+- it is fooled by **negation** ("What does the warranty *not* cover?" vs "…cover?" = 0.974).
+
+So with this model, savings come mostly from **exact repeats** and **coalescing**; the semantic
+layer is a safe bonus for rewordings. A stronger model or a re-ranker would be the next lever.
+
+### 15.3 Load tests
+
+`semcache_loadgen` (C++, closed loop) against the real `semcache` + `semcache-mock` binaries,
+orchestrated by `tools/run_load_eval.py`. Trick for the semantic path: random letter case gives a
+new prompt hash (no exact hit) but the same embedding (the tokenizer is uncased), so every request
+runs embed → search → semantic HIT.
+
+| scenario | throughput | p50 | p99 | upstream calls |
+|---|---:|---:|---:|---:|
+| exact HIT | 24,518 req/s | 1.0 ms | 8.6 ms | 0 |
+| semantic HIT | 307 req/s | 103 ms | 150 ms | 0 |
+| MISS (upstream 0 ms) | 262 req/s | 120 ms | 195 ms | all |
+| mixed (300 ms upstream), cache on | 490 req/s | 48 ms | 488 ms | 2,868 / 14,936 |
+| mixed, cache off | 210 req/s | 303 ms | 327 ms | 6,348 / 6,348 |
+| herd 50×20, coalescing on / off | — | 509 / 574 ms | 514 / 786 ms | **20 / 1,000** |
+
+Exact HITs are ~1 ms through the whole HTTP stack; anything that needs an embedding is
+CPU-bound on the embedder (~13 ms per embed here, plus queueing).
+
+### 15.4 Brute force vs HNSW, and HNSW on real data
+
+At ~9.8K entries in one partition, the lookup p50 is 1.41 ms (brute force) vs 0.83 ms (HNSW), but
+end-to-end throughput is identical (~210 req/s) because embedding dominates. HNSW recall@10 on
+**real QQP embeddings** at ef=64 is 0.9956–0.9994 (1K–18K vectors), a little below the synthetic
+1.0 of Phase 5, so the default stays.
+
+### 15.5 Cost model
+
+`tools/cost_model.py` combines the measured rates with **assumed** traffic, token counts and
+prices (labelled as assumptions; plug in your own) into a table of upstream spend saved, proxy
+CPU spent and wrong answers per month for several traffic mixes (`cost_model.md`). Embedding CPU is
+~$1 per 10M requests at the example prices, so the traffic mix decides the savings.
+
+### 15.6 Smaller findings
+
+- A semantic HIT does not store an exact alias, so repeated paraphrases pay an embedding every
+  time; adding one is a cheap improvement (not done).
+- Load generator, proxy and mock share the laptop's cores; absolute numbers vary ~2× with its
+  power state, so compare within a table.
+
+---
+
+## 16. Concurrency model as implemented
 
 **Threads:**
 
@@ -1165,7 +1265,7 @@ readers during HNSW upgrades, concurrent HNSW searches, and the herd stress test
 
 ---
 
-## 16. Failure handling: "fail open"
+## 17. Failure handling: "fail open"
 
 Rule: **if upstream could have served the request, the client gets upstream's answer.**
 
@@ -1198,7 +1298,7 @@ Rule: **if upstream could have served the request, the client gets upstream's an
 
 ---
 
-## 17. Configuration reference
+## 18. Configuration reference
 
 Sections (see `config/semcache.example.toml` for every key with comments):
 
@@ -1206,7 +1306,7 @@ Sections (see `config/semcache.example.toml` for every key with comments):
 - `[server]`: host, port, io_threads, max_inflight, max_body_bytes, read/write/shutdown timeouts
 - `[upstream]`: base_url, verify_tls, connect/first_byte/idle/total timeouts, max_response_bytes
 - `[embedder]`: model_path, vocab_path, max_tokens (256), intra_op_threads (1), threads (4), queue_capacity (1024)
-- `[cache]`: enabled, similarity_threshold (0.90), history_k (2), max_temperature (2.0),
+- `[cache]`: enabled, similarity_threshold (0.97), history_k (2), max_temperature (2.0),
   default_ttl_s (86400), max_bytes (1 GiB), max_response_bytes (64 KiB), store_finish_reasons,
   restream_chunk_chars (16), restream_delay_ms (0), sweep_interval_ms (60000),
   writer_queue_capacity (4096), max_tags_per_entry (16), max_tag_bytes (64), purge_guard_window_s (300)
@@ -1225,7 +1325,7 @@ by `key_env`.
 
 ---
 
-## 18. Observability: logs, metrics, endpoints
+## 19. Observability: logs, metrics, endpoints
 
 **Log line per request** (JSON): `ts, level, msg="request", req_id, tenant, status, cache,
 streamed, latency_ms, upstream_ms, upstream_error, bytes_in, [similarity], [bypass_reason],
@@ -1255,7 +1355,7 @@ streamed, latency_ms, upstream_ms, upstream_error, bytes_in, [similarity], [bypa
 
 ---
 
-## 19. Testing: how we know it works
+## 20. Testing: how we know it works
 
 **221 tests**, run under three builds (debug, ASan+UBSan, TSan).
 
@@ -1307,7 +1407,7 @@ for each).
 
 ---
 
-## 20. Measurements so far
+## 21. Measurements so far
 
 All from reproducible scripts; raw JSON under `bench/results/`. Machine: i7-1165G7 laptop under
 WSL2, which measured well below the CPU's capability (~35 GFLOP/s single-core).
@@ -1345,18 +1445,25 @@ gate) — not adopted.
 **HNSW (Phase 5):** see the table in §13.5 — recall@10 = 1.0 at ef=64 on synthetic clustered
 data up to 50K vectors; p50 224 µs vs 1,451 µs brute force at 10K; auto switch at 5,000 vectors.
 
+**Evaluation (Phase 7):** see §15 — threshold 0.97 (QQP recall 12.4%, false-hit 0.7%); exact HIT
+24.5K req/s at p50 1 ms; semantic paths embedding-bound (~300 req/s); herd 50×20: 20 vs 1,000
+upstream calls; mixed workload −81% upstream calls.
+
 **Persistence (Phase 6):** see §14.7 — 20K entries recover in 0.26 s with brute-force partitions,
 ~17 s as one HNSW partition; ~3.7 KB on disk per entry.
 
 ---
 
-## 21. Known weaknesses and what comes next
+## 22. Known weaknesses and what comes next
 
 **Known weaknesses:**
 - Embedding is slow on this laptop: above the 10 ms HIT budget for longer prompts. Re-measure on
   target hardware; levers are the exact fast path, coalescing, and possibly int8 (Phase 7).
-- The model misses real paraphrases with different wording (cosine 0.55 for "money back" vs
-  "refund policy"). Phase 7 measures hit vs false-hit rates.
+- The model misses real paraphrases with different wording and is fooled by negation; at the safe
+  threshold (0.97) it catches only 12% of QQP duplicates (§15.2). A stronger embedding model or a
+  re-ranker is the lever.
+- Semantic HITs and MISSes are embedding-bound (~300 req/s on this laptop); the 10 ms HIT target
+  holds for exact HITs only here.
 - Context key K=2 can share answers between conversations that differ only earlier (ADR-002).
 - HNSW recall was measured on synthetic clusters; real embeddings (Phase 7) may need a larger `ef`.
 - HNSW builds grow super-linearly (100 s at 50K on this laptop) and run on the single writer
@@ -1373,13 +1480,12 @@ data up to 50K vectors; p50 224 µs vs 1,451 µs brute force at 10K; auto switch
 - CI runs on GitHub for every push (debug, release, ASan, TSan); Phase 6 was not yet pushed when this was written.
 
 **Next phases:**
-7. Evaluation: QQP + synthetic FAQ, hit vs false-hit curve, throughput, cost model.
 8. Dashboard.
 9. Docker, deploy docs, README.
 
 ---
 
-## 22. How to build, run and test
+## 23. How to build, run and test
 
 ```bash
 # one-time setup
@@ -1408,6 +1514,14 @@ bench/run_embed_bench.sh
 ./build/release/semcache_hnsw_eval --sizes 1000,5000,10000 --queries 500 --out hnsw.json
 ./build/release/semcache_persist_eval --entries 20000 --partitions 200
 
+# Phase 7 evaluation (see bench/results/phase7/README.md for the full list)
+.venv/bin/python tools/prepare_eval.py
+./build/release/semcache_embed_texts --in data/eval/qqp_texts.jsonl --out data/eval/qqp
+./build/release/semcache_embed_texts --in data/eval/faq_texts.jsonl --out data/eval/faq
+.venv/bin/python tools/analyze_threshold.py
+.venv/bin/python tools/run_load_eval.py
+.venv/bin/python tools/cost_model.py
+
 # purge (needs SEMCACHE_ADMIN_KEY set when the server started)
 curl -s -H "Authorization: Bearer $SEMCACHE_ADMIN_KEY" -d '{"tag":"faq"}' localhost:8080/admin/purge
 
@@ -1419,7 +1533,7 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 
 ---
 
-## 23. Glossary
+## 24. Glossary
 
 | Term | Meaning |
 |---|---|
@@ -1450,6 +1564,10 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 | **Writer thread** | The one thread allowed to change the cache; everyone else submits work to its queue. |
 | **Recall@k** | Share of the true k nearest neighbours that an approximate search returns (1.0 = all). |
 | **M / ef** | HNSW links per node / beam width (how many candidates a search keeps). |
+| **Recall / precision / false-hit rate** | Share of true duplicates that hit / share of hits that were correct / share of look-alike non-duplicates that (wrongly) hit. |
+| **AUC** | Probability that a random duplicate pair scores higher than a random non-duplicate pair (1.0 = perfect separation). |
+| **Hard negative** | A question worded like another but needing a different answer. |
+| **Closed-loop load test** | Each simulated client sends its next request as soon as the previous one returns. |
 | **WAL / LSN** | Write-ahead log: an append-only record of every change / its sequence number. |
 | **Snapshot** | A full copy of the cache at one LSN; the WAL after it brings recovery up to date. |
 | **fsync / fdatasync** | Ask the OS to actually put written bytes on the disk (not just in its cache). |

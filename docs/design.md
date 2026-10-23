@@ -52,6 +52,13 @@ semcache is a drop-in proxy (change only `base_url`). It returns a cached answer
 | Durability | Best-effort. With WAL `fsync` every `persistence.fsync_interval_ms`, at most that window of inserts is lost on crash. | Losing cache entries only costs money, never correctness. |
 | Security | No cross-tenant reads by construction. Secrets only from env. Prompts redacted from logs by default. | §10. |
 
+**Measured against these targets (Phase 7, [bench/results/phase7](../bench/results/phase7/README.md),
+dev laptop):** exact HIT p50 1.0 ms / p99 8.6 ms at 24.5K req/s (meets the 10 ms target);
+semantic HITs and MISSes are embedding-bound (~13 ms CPU per embed; p50 ~100 ms with 32 clients on
+4 embed threads), so the 10 ms / 12 ms targets are **not met for semantic paths on this hardware**;
+all-HIT throughput target (500 req/s) met for exact HITs, not for semantic ones (~300 req/s).
+Lookup p50 at ~10K entries: 1.4 ms brute force, 0.8 ms HNSW (budget 2 ms).
+
 ## 4. Non-goals
 
 - Multi-node deployment (documented in §11, not implemented).
@@ -506,7 +513,7 @@ max_tokens = 256
 
 [cache]
 enabled = true
-similarity_threshold = 0.90   # placeholder; Phase 7 sets the default from the curve
+similarity_threshold = 0.97   # measured in Phase 7: <= 1% false hits on QQP non-duplicates
 history_k = 2
 max_temperature = 2.0
 default_ttl_s = 86400
@@ -606,3 +613,4 @@ ttl_s = 86400
 | [009](adr/009-coalescing-scope.md) | Coalesce on exact flight key; near-duplicate optional |
 | [010](adr/010-embedded-dashboard.md) | Dashboard as static files embedded in the binary |
 | [011](adr/011-pinned-upstream-onnx-model.md) | Published ONNX export pinned by revision + SHA-256 |
+| [012](adr/012-similarity-threshold-from-false-hits.md) | Default threshold 0.97 from a 1% false-hit budget on QQP |

@@ -75,13 +75,15 @@ Source of truth for design: `docs/design.md`. Decisions: `docs/adr/`.
   live; flight retired after the insert is applied). Coroutines take parameters by value.
 - Phase 5 (HNSW): done. `HnswIndex`; `index.kind` auto upgrades a partition at 5000 vectors
   (measured), built off-lock on the writer. Recall@10 = 1.0 at ef=64 on synthetic clusters.
-- **Phase 6 (persistence + invalidation): implemented, awaiting review.** `src/persist/`: CRC32C,
-  bounds-checked codec, WAL segments + snapshot (ADR-008 notes). Store notifies a `MutationObserver`
-  (writer thread) => WAL INSERT/DELETE; snapshots are point-in-time pointer copies serialized on a
-  snapshot thread; recovery = snapshot + replay > LSN, torn tail truncated, mid-log damage stops
-  replay, model fingerprint drops foreign vectors, disk errors => memory-only + retry.
-  `X-Semcache-Tags` (invalid => BYPASS), `POST /admin/purge` (SEMCACHE_ADMIN_KEY; tenant/tag/context),
-  purge guard drops in-flight inserts. Measured: 20K entries recover in 0.26 s (brute force) but
-  ~17 s for one HNSW partition (graph rebuild); writer ~1K inserts/s into a large HNSW partition.
+- Phase 6 (persistence + invalidation): done. Snapshot + WAL (`src/persist/`), recovery with torn-tail
+  truncation / corrupt-file set-aside / model fingerprint; tags + `POST /admin/purge` + purge guard.
+  Known: one 20K HNSW partition recovers in ~17 s (graph rebuilt from vectors).
+- **Phase 7 (evaluation): implemented, awaiting review.** `bench/results/phase7`. QQP (10K pairs,
+  downloaded to data/, not committed) + synthetic FAQ (`bench/data/faq_eval.jsonl`), embedded by the
+  product embedder (`semcache_embed_texts`). Threshold default now **0.97** (ADR-012: <= 1% false hits on
+  QQP non-dups; recall 12.4%). MiniLM catches near-rewordings only; negation fools it. Load
+  (`semcache_loadgen` + `tools/run_load_eval.py`): exact HIT 24.5K rps p50 1 ms; semantic/MISS
+  embedding-bound (~300 rps); mixed workload -81% upstream calls; herd 50x20: 20 vs 1000 upstream
+  calls. HNSW recall@10 on real QQP vectors >= 0.995 at ef=64. Cost model: `tools/cost_model.py`.
   Deferred: `/stats/stream` + recent-requests ring (Phase 8).
 - Python tooling: `python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt`.
