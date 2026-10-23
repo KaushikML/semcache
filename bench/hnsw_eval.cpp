@@ -3,7 +3,9 @@
 //
 // Data: 384-d unit vectors drawn around cluster centers (topics), which is closer to sentence
 // embeddings than uniform random vectors. Queries are fresh draws from the same distribution.
-// Usage: semcache_hnsw_eval [--sizes 1000,10000,50000] [--queries 500] [--out results.json]
+// With --vectors FILE.f32 (N x 384 float32, e.g. real QQP embeddings from semcache_embed_texts) the
+// last --queries rows are the queries and the first n rows the data, instead of synthetic draws.
+// Usage: semcache_hnsw_eval [--sizes 1000,10000,50000] [--queries 500] [--vectors F.f32] [--out results.json]
 
 #include <algorithm>
 #include <chrono>
@@ -95,9 +97,11 @@ int main(int argc, char** argv) {
   std::vector<std::size_t> sizes = {1000, 5000, 10000, 20000, 50000};
   std::size_t n_queries = 500;
   std::string out_path;
+  std::string vectors_path;
   for (int i = 1; i + 1 < argc; i += 2) {
     std::string a = argv[i];
-    if (a == "--sizes") sizes = parse_sizes(argv[i + 1]);
+    if (a == "--vectors") vectors_path = argv[i + 1];
+    else if (a == "--sizes") sizes = parse_sizes(argv[i + 1]);
     else if (a == "--queries") n_queries = std::stoul(argv[i + 1]);
     else if (a == "--out") out_path = argv[i + 1];
   }
@@ -107,11 +111,26 @@ int main(int argc, char** argv) {
   nlohmann::json results = nlohmann::json::array();
   std::printf("%8s %10s %10s | %9s %9s %9s | %4s %8s %9s %9s\n", "n", "bf_p50us", "bf_p99us", "build_s", "mem_MB",
               "bf_MB", "ef", "recall", "p50us", "p99us");
+  std::vector<Vec> real;
+  if (!vectors_path.empty()) {
+    std::ifstream f(vectors_path, std::ios::binary);
+    Vec v(kDim);
+    while (f.read(reinterpret_cast<char*>(v.data()), static_cast<std::streamsize>(kDim * sizeof(float)))) real.push_back(v);
+    std::printf("real vectors: %zu from %s\n", real.size(), vectors_path.c_str());
+  }
   for (std::size_t n : sizes) {
-    std::mt19937 rng(static_cast<std::uint32_t>(n));
-    const auto cs = centers(std::max<std::size_t>(1, n / kPointsPerCluster), rng);
-    const auto data = draw(cs, n, rng);
-    const auto queries = draw(cs, n_queries, rng);
+    std::vector<Vec> data;
+    std::vector<Vec> queries;
+    if (!real.empty()) {
+      if (n + n_queries > real.size()) continue;
+      data.assign(real.begin(), real.begin() + static_cast<std::ptrdiff_t>(n));
+      queries.assign(real.end() - static_cast<std::ptrdiff_t>(n_queries), real.end());
+    } else {
+      std::mt19937 rng(static_cast<std::uint32_t>(n));
+      const auto cs = centers(std::max<std::size_t>(1, n / kPointsPerCluster), rng);
+      data = draw(cs, n, rng);
+      queries = draw(cs, n_queries, rng);
+    }
 
     BruteForceIndex bf(kDim);
     for (VectorId i = 0; i < n; ++i) bf.add(i, data[i]);
@@ -153,6 +172,7 @@ int main(int argc, char** argv) {
   }
   if (!out_path.empty()) {
     std::ofstream(out_path) << nlohmann::json{{"params", {{"m", params.m}, {"ef_construction", params.ef_construction}}},
+                                              {"data", vectors_path.empty() ? "synthetic clusters" : vectors_path},
                                               {"dim", kDim},
                                               {"k", kK},
                                               {"queries", n_queries},
