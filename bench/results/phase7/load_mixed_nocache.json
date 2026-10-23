@@ -1,0 +1,79 @@
+{
+  "loadgen": {
+    "by_result": {
+      "BYPASS": {
+        "count": 6348,
+        "max_ms": 346.948976,
+        "mean_ms": 302.9988611717081,
+        "p50_ms": 302.556369,
+        "p90_ms": 303.926302,
+        "p99_ms": 327.30346
+      }
+    },
+    "concurrency": 64,
+    "elapsed_s": 30.292312724,
+    "errors": 0,
+    "latency": {
+      "count": 6348,
+      "max_ms": 346.948976,
+      "mean_ms": 302.9988611717081,
+      "p50_ms": 302.556369,
+      "p90_ms": 303.926302,
+      "p99_ms": 327.30346
+    },
+    "mode": "mix",
+    "non_200": 0,
+    "requests": 6348,
+    "rps": 209.5581165372892,
+    "stream": false
+  },
+  "stats": {
+    "cache": {
+      "bytes": 0,
+      "entries": 0,
+      "max_bytes": 1073741824,
+      "partitions": 0,
+      "similarity_threshold": 0.97
+    },
+    "embedder_ready": true,
+    "hit_rate": 0.0,
+    "inflight": 0,
+    "latency": {
+      "embed": {
+        "count": 0,
+        "p50_ms": 0.0,
+        "p90_ms": 0.0,
+        "p99_ms": 0.0
+      },
+      "lookup": {
+        "count": 0,
+        "p50_ms": 0.0,
+        "p90_ms": 0.0,
+        "p99_ms": 0.0
+      },
+      "request": {
+        "count": 6548,
+        "p50_ms": 375.0,
+        "p90_ms": 475.0,
+        "p99_ms": 497.49999999999994
+      },
+      "upstream": {
+        "count": 6548,
+        "p50_ms": 375.0,
+        "p90_ms": 475.0,
+        "p99_ms": 497.49999999999994
+      }
+    },
+    "requests": {
+      "BYPASS": 6548,
+      "COALESCED": 0,
+      "HIT": 0,
+      "MISS": 0
+    },
+    "requests_total": 6548,
+    "tokens_saved": 0
+  },
+  "upstream_calls": 6348,
+  "mock_latency_ms": 300,
+  "mix": "50% exact repeat, 30% case variant, 20% new"
+}

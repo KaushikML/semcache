@@ -1,0 +1,80 @@
+{
+  "loadgen": {
+    "by_result": {
+      "HIT": {
+        "count": 3099,
+        "max_ms": 218.409984,
+        "mean_ms": 77.56555976282684,
+        "p50_ms": 75.252086,
+        "p90_ms": 95.819643,
+        "p99_ms": 136.36748
+      }
+    },
+    "concurrency": 16,
+    "elapsed_s": 15.063948634,
+    "errors": 0,
+    "latency": {
+      "count": 3099,
+      "max_ms": 218.409984,
+      "mean_ms": 77.56555976282684,
+      "p50_ms": 75.252086,
+      "p90_ms": 95.819643,
+      "p99_ms": 136.36748
+    },
+    "mode": "case",
+    "non_200": 0,
+    "requests": 3099,
+    "rps": 205.72295321064885,
+    "stream": false
+  },
+  "stats": {
+    "cache": {
+      "bytes": 24569418,
+      "entries": 9838,
+      "max_bytes": 1073741824,
+      "partitions": 1,
+      "similarity_threshold": 0.97
+    },
+    "embedder_ready": true,
+    "hit_rate": 0.24895030154973663,
+    "inflight": 0,
+    "latency": {
+      "embed": {
+        "count": 13099,
+        "p50_ms": 18.35025743707094,
+        "p90_ms": 33.26933856502243,
+        "p99_ms": 49.78993834080718
+      },
+      "lookup": {
+        "count": 13099,
+        "p50_ms": 0.8293926933417681,
+        "p90_ms": 1.9451395277522232,
+        "p99_ms": 4.958609467455622
+      },
+      "request": {
+        "count": 13099,
+        "p50_ms": 76.6208699983397,
+        "p90_ms": 98.36916818861033,
+        "p99_ms": 228.57306434023994
+      },
+      "upstream": {
+        "count": 9838,
+        "p50_ms": 1.9627301302200268,
+        "p90_ms": 5.3700534759358325,
+        "p99_ms": 12.700000000000111
+      }
+    },
+    "requests": {
+      "BYPASS": 0,
+      "COALESCED": 0,
+      "HIT": 3261,
+      "MISS": 9838
+    },
+    "requests_total": 13099,
+    "tokens_saved": 172915
+  },
+  "upstream_calls": null,
+  "entries": 10000,
+  "populate_s": 49.08658504486084,
+  "index_kind": "auto"
+}

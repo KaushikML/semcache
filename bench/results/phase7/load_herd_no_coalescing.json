@@ -1,0 +1,78 @@
+{
+  "loadgen": {
+    "by_result": {
+      "MISS": {
+        "count": 1000,
+        "max_ms": 848.826721,
+        "mean_ms": 584.8241384350004,
+        "p50_ms": 574.409318,
+        "p90_ms": 662.942237,
+        "p99_ms": 785.582007
+      }
+    },
+    "concurrency": 50,
+    "elapsed_s": 13.418690052,
+    "errors": 0,
+    "latency": {
+      "count": 1000,
+      "max_ms": 848.826721,
+      "mean_ms": 584.8241384350004,
+      "p50_ms": 574.409318,
+      "p90_ms": 662.942237,
+      "p99_ms": 785.582007
+    },
+    "mode": "herd",
+    "non_200": 0,
+    "requests": 1000,
+    "rps": 74.52292258967216,
+    "stream": false
+  },
+  "stats": {
+    "cache": {
+      "bytes": 50018,
+      "entries": 20,
+      "max_bytes": 1073741824,
+      "partitions": 1,
+      "similarity_threshold": 0.97
+    },
+    "embedder_ready": true,
+    "hit_rate": 0.0,
+    "inflight": 0,
+    "latency": {
+      "embed": {
+        "count": 1000,
+        "p50_ms": 13.775510204081632,
+        "p90_ms": 23.9795918367347,
+        "p99_ms": 45.833333333333336
+      },
+      "lookup": {
+        "count": 1000,
+        "p50_ms": 0.05,
+        "p90_ms": 0.09000000000000001,
+        "p99_ms": 0.099
+      },
+      "request": {
+        "count": 1000,
+        "p50_ms": 750.0,
+        "p90_ms": 950.0,
+        "p99_ms": 995.0
+      },
+      "upstream": {
+        "count": 1000,
+        "p50_ms": 750.0,
+        "p90_ms": 950.0,
+        "p99_ms": 995.0
+      }
+    },
+    "requests": {
+      "BYPASS": 0,
+      "COALESCED": 0,
+      "HIT": 0,
+      "MISS": 1000
+    },
+    "requests_total": 1000,
+    "tokens_saved": 0
+  },
+  "upstream_calls": 1000,
+  "mock_latency_ms": 500
+}

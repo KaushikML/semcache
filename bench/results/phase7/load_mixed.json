@@ -1,0 +1,87 @@
+{
+  "loadgen": {
+    "by_result": {
+      "HIT": {
+        "count": 12068,
+        "max_ms": 240.00817,
+        "mean_ms": 54.710820049055265,
+        "p50_ms": 1.273256,
+        "p90_ms": 158.729258,
+        "p99_ms": 203.633269
+      },
+      "MISS": {
+        "count": 2868,
+        "max_ms": 539.250048,
+        "mean_ms": 441.80092168270596,
+        "p50_ms": 442.260624,
+        "p90_ms": 478.20196,
+        "p99_ms": 510.035219
+      }
+    },
+    "concurrency": 64,
+    "elapsed_s": 30.467668515,
+    "errors": 0,
+    "latency": {
+      "count": 14936,
+      "max_ms": 539.250048,
+      "mean_ms": 129.03958353896567,
+      "p50_ms": 48.274568,
+      "p90_ms": 440.489121,
+      "p99_ms": 488.549052
+    },
+    "mode": "mix",
+    "non_200": 0,
+    "requests": 14936,
+    "rps": 490.2245799558516,
+    "stream": false
+  },
+  "stats": {
+    "cache": {
+      "bytes": 7664182,
+      "entries": 3068,
+      "max_bytes": 1073741824,
+      "partitions": 1,
+      "similarity_threshold": 0.97
+    },
+    "embedder_ready": true,
+    "hit_rate": 0.7973044397463002,
+    "inflight": 0,
+    "latency": {
+      "embed": {
+        "count": 7686,
+        "p50_ms": 16.607929515418505,
+        "p90_ms": 24.73409691629956,
+        "p99_ms": 47.597094801223264
+      },
+      "lookup": {
+        "count": 7686,
+        "p50_ms": 0.38010899182561303,
+        "p90_ms": 0.8729554655870446,
+        "p99_ms": 1.5172580645161315
+      },
+      "request": {
+        "count": 15136,
+        "p50_ms": 68.11320754716982,
+        "p90_ms": 379.70627503337784,
+        "p99_ms": 493.3778371161548
+      },
+      "upstream": {
+        "count": 3068,
+        "p50_ms": 375.0,
+        "p90_ms": 475.00000000000006,
+        "p99_ms": 497.50000000000006
+      }
+    },
+    "requests": {
+      "BYPASS": 0,
+      "COALESCED": 0,
+      "HIT": 12068,
+      "MISS": 3068
+    },
+    "requests_total": 15136,
+    "tokens_saved": 638802
+  },
+  "upstream_calls": 2868,
+  "mock_latency_ms": 300,
+  "mix": "50% exact repeat, 30% case variant, 20% new"
+}

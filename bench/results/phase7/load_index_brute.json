@@ -1,0 +1,80 @@
+{
+  "loadgen": {
+    "by_result": {
+      "HIT": {
+        "count": 3184,
+        "max_ms": 195.803121,
+        "mean_ms": 75.51823267179662,
+        "p50_ms": 73.25141,
+        "p90_ms": 90.482788,
+        "p99_ms": 146.97302
+      }
+    },
+    "concurrency": 16,
+    "elapsed_s": 15.074003295,
+    "errors": 0,
+    "latency": {
+      "count": 3184,
+      "max_ms": 195.803121,
+      "mean_ms": 75.51823267179662,
+      "p50_ms": 73.25141,
+      "p90_ms": 90.482788,
+      "p99_ms": 146.97302
+    },
+    "mode": "case",
+    "non_200": 0,
+    "requests": 3184,
+    "rps": 211.22457901121214,
+    "stream": false
+  },
+  "stats": {
+    "cache": {
+      "bytes": 24497462,
+      "entries": 9809,
+      "max_bytes": 1073741824,
+      "partitions": 1,
+      "similarity_threshold": 0.97
+    },
+    "embedder_ready": true,
+    "hit_rate": 0.2559921116504854,
+    "inflight": 0,
+    "latency": {
+      "embed": {
+        "count": 13184,
+        "p50_ms": 16.375306873977088,
+        "p90_ms": 24.46695990180033,
+        "p99_ms": 47.46145610278373
+      },
+      "lookup": {
+        "count": 13184,
+        "p50_ms": 1.4078067716195817,
+        "p90_ms": 4.000738786279684,
+        "p99_ms": 4.93996833773087
+      },
+      "request": {
+        "count": 13184,
+        "p50_ms": 72.54721930745016,
+        "p90_ms": 95.60423224903813,
+        "p99_ms": 186.81789137380184
+      },
+      "upstream": {
+        "count": 9809,
+        "p50_ms": 1.6225097747160677,
+        "p90_ms": 4.317026476578412,
+        "p99_ms": 9.239659685863874
+      }
+    },
+    "requests": {
+      "BYPASS": 0,
+      "COALESCED": 0,
+      "HIT": 3375,
+      "MISS": 9809
+    },
+    "requests_total": 13184,
+    "tokens_saved": 178816
+  },
+  "upstream_calls": null,
+  "entries": 10000,
+  "populate_s": 39.8902587890625,
+  "index_kind": "brute"
+}
