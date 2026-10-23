@@ -48,7 +48,7 @@ semcache is a drop-in proxy (change only `base_url`). It returns a cached answer
 | Throughput, all-HIT | ≥ **500 req/s** on 8 cores *(est.)* | Embedding-bound; the exact fast path raises it for repeats. |
 | Memory | Configurable budget, default **1 GiB** for cache entries + index; hard cap enforced by eviction | §5.1. |
 | Availability | Cache layer failures never fail a request (fail open). | Core rule. |
-| Consistency | Single node: read-your-writes after the store completes. Entries may be stale up to their TTL. Purge takes effect immediately for subsequent lookups. Coalesced waiters see exactly the leader's response. | A cache, not a source of truth. |
+| Consistency | Single node: read-your-writes after the store completes. Entries may be stale up to their TTL. Purge takes effect immediately for subsequent lookups, and responses that were in flight during the purge are not stored afterwards (purge guard, ADR-008 notes). Coalesced waiters see exactly the leader's response. | A cache, not a source of truth. |
 | Durability | Best-effort. With WAL `fsync` every `persistence.fsync_interval_ms`, at most that window of inserts is lost on crash. | Losing cache entries only costs money, never correctness. |
 | Security | No cross-tenant reads by construction. Secrets only from env. Prompts redacted from logs by default. | §10. |
 
@@ -129,6 +129,13 @@ efC=200, ef=64) reaches recall@10 = 1.0000 on clustered synthetic data at 1K–5
 224 µs at 10K and 889 µs at 50K (brute force: 1,451 µs and 9,017 µs). `index.hnsw_min_partition_size`
 = **5,000**: the last measured size where brute force's p99 stays under the 2 ms budget. The
 upgrade costs a one-off ~3 s graph build on the writer thread.
+
+**Measured (Phase 6, [bench/results/phase6](../bench/results/phase6/README.md)):** ~3.7 KB on
+disk per entry (2 KB response). 20K entries in 200 brute-force partitions recover in 0.26 s; one
+20K-entry HNSW partition takes ~17 s, because graphs are rebuilt from vectors (~0.85 ms per HNSW
+insert). The same cost caps the writer at ~1K inserts/s into a large HNSW partition (8K/s into
+brute-force partitions). Levers if the target hardware confirms it: background recovery while
+serving passthrough, persisting graph links, or a lower `hnsw_ef_construction`.
 
 ### 5.4 Request limits (derived)
 
@@ -324,6 +331,7 @@ final SSE comment `: semcache-total-ms=…`.
 | Embed pool | `embedder.threads` (default 4) | Pop job from bounded MPMC queue (`embedder.queue_capacity`), tokenize, ORT `Run` (`intra_op_num_threads = 1`), then index **search** under a shared lock, then post the result back to the request's strand. | Hold a lock across `Run`. |
 | Writer | 1 | Sole mutator of CacheStore: inserts, deletes, TTL expiry, evictions, purges. Appends each mutation to the WAL in the same order. | Network I/O. |
 | Maintenance | 1 | Timers: TTL sweep (enqueues deletes to writer), snapshot (shared locks, partition by partition), WAL fsync, metrics gauges refresh. | Mutate the store directly. |
+| Snapshot (as built, Phase 6) | 1 | Replaces the maintenance thread's snapshot duty: serializes an immutable point-in-time copy of the entry pointers handed over by the writer, without any lock. WAL fsync runs on the writer between mutations; the TTL sweep is a writer job queued by a timer. | Touch the store. |
 
 Single writer gives a total order of mutations (which makes the WAL trivially consistent) and
 keeps index writes off the hot read path. The cost is that inserts become visible
@@ -528,6 +536,7 @@ dir = "data"
 snapshot_interval_s = 300
 fsync_interval_ms = 1000
 retry_interval_ms = 30000
+max_wal_bytes = 268435456
 
 [limits]
 rps = 50

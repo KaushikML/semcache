@@ -1,12 +1,12 @@
-# semcache — complete walkthrough (Phases 0–5)
+# semcache — complete walkthrough (Phases 0–6)
 
 This document explains everything built so far: the idea, the design, every file, every library,
 the C++ techniques used, how a request flows through the code, how concurrency and failures are
 handled, how it is tested, and what was measured. Read it top to bottom once; afterwards use the
 file map (§4) as an index.
 
-Status at time of writing: Phases 0–4 done; Phase 5 (HNSW) implemented and awaiting review.
-198 automated tests pass in debug, AddressSanitizer/UBSan and ThreadSanitizer builds.
+Status at time of writing: Phases 0–5 done; Phase 6 (persistence + purge) implemented and awaiting
+review. 221 automated tests pass in debug, AddressSanitizer/UBSan and ThreadSanitizer builds.
 
 ---
 
@@ -25,15 +25,16 @@ Status at time of writing: Phases 0–4 done; Phase 5 (HNSW) implemented and awa
 11. [Phase 3 — the cache](#11-phase-3--the-cache)
 12. [Phase 4 — coalescing and the writer thread](#12-phase-4--coalescing-and-the-writer-thread)
 13. [Phase 5 — the HNSW index](#13-phase-5--the-hnsw-index)
-14. [Concurrency model as implemented](#14-concurrency-model-as-implemented)
-15. [Failure handling: "fail open"](#15-failure-handling-fail-open)
-16. [Configuration reference](#16-configuration-reference)
-17. [Observability: logs, metrics, endpoints](#17-observability-logs-metrics-endpoints)
-18. [Testing: how we know it works](#18-testing-how-we-know-it-works)
-19. [Measurements so far](#19-measurements-so-far)
-20. [Known weaknesses and what comes next](#20-known-weaknesses-and-what-comes-next)
-21. [How to build, run and test](#21-how-to-build-run-and-test)
-22. [Glossary](#22-glossary)
+14. [Phase 6 — persistence and purge](#14-phase-6--persistence-and-purge)
+15. [Concurrency model as implemented](#15-concurrency-model-as-implemented)
+16. [Failure handling: "fail open"](#16-failure-handling-fail-open)
+17. [Configuration reference](#17-configuration-reference)
+18. [Observability: logs, metrics, endpoints](#18-observability-logs-metrics-endpoints)
+19. [Testing: how we know it works](#19-testing-how-we-know-it-works)
+20. [Measurements so far](#20-measurements-so-far)
+21. [Known weaknesses and what comes next](#21-known-weaknesses-and-what-comes-next)
+22. [How to build, run and test](#22-how-to-build-run-and-test)
+23. [Glossary](#23-glossary)
 
 ---
 
@@ -128,6 +129,9 @@ Client ──HTTP──► ProxyServer (src/proxy/proxy_server.cpp)
                       (src/cache/cache_writer.cpp), which inserts it into the CacheStore
                    ▼
                  ProxyServer logs one JSON line, updates metrics
+
+ (on the writer thread, every applied change is also appended to the write-ahead log, and a
+  snapshot is written every few minutes: src/persist/ — the cache survives restarts)
 ```
 
 Every arrow that touches the cache has an escape hatch: if anything in the cache layer fails
@@ -214,6 +218,11 @@ cache can only ever remove work, never break a request.
 | `index/vector_index.hpp` | VectorIndex | Interface: `add`, `remove`, `search(q, k)`. |
 | `index/simd.{hpp,cpp}` | VectorIndex | Dot-product kernels: scalar and AVX2+FMA; runtime CPU detection. |
 | `index/brute_force_index.{hpp,cpp}` | VectorIndex | Exact search over one contiguous float buffer. |
+| `persist/crc32c.{hpp,cpp}` | Persistence | CRC-32C checksum on every record on disk. |
+| `persist/codec.{hpp,cpp}` | Persistence | Bounds-checked binary encoding of cache entries (`ByteWriter` / `ByteReader`). |
+| `persist/log_format.{hpp,cpp}` | Persistence | WAL segment and snapshot file formats; readers that stop at the first bad record. |
+| `persist/files.{hpp,cpp}` | Persistence | Durable file writes: write-all, `fdatasync`, directory `fsync`. |
+| `persist/persistence.{hpp,cpp}` | Persistence | Recovery, WAL buffering and fsync, segment rotation, snapshot thread, disk-error fallback. |
 | `index/hnsw_index.{hpp,cpp}` | VectorIndex | Approximate search over a layered proximity graph (HNSW); tombstone deletes. |
 | `proxy/proxy_metrics.hpp` | Metrics | Every metric the proxy exports, registered once. `CacheResult` enum (HIT/MISS/COALESCED/BYPASS). |
 | `proxy/proxy_server.{hpp,cpp}` | Http | Connection loop, routing, auth, rate limit, in-flight limit, `/healthz`, `/readyz`, `/stats`, `/metrics`, request log line. |
@@ -240,9 +249,10 @@ cache can only ever remove work, never break a request.
 |---|---|
 | `embed_bench.cpp` | Google Benchmark: tokenizer speed, single embeds at 16–256 tokens, batching, 1–8 concurrent threads. |
 | `index_bench.cpp` | Google Benchmark: dot product scalar vs AVX2; brute-force search at 1K–100K vectors. |
+| `persist_eval.cpp` | WAL replay, snapshot write and snapshot load times and sizes for N entries. |
 | `hnsw_eval.cpp` | Brute force vs HNSW per partition size: recall@10, p50/p99 latency for several `ef`, build time, memory. |
 | `run_embed_bench.sh` | Runs the embed benchmark, saves JSON plus machine details. |
-| `results/phase2/`, `phase3/`, `phase5/` | Raw JSON results, machine info, and a README with the tables and takeaways. |
+| `results/phase2/`, `phase3/`, `phase5/`, `phase6/` | Raw JSON results, machine info, and a README with the tables and takeaways. |
 
 ### `tests/`
 
@@ -254,7 +264,7 @@ cache can only ever remove work, never break a request.
 | `support/recording_writer.hpp` | A `ResponseWriter` that just records calls, for coalescer tests without sockets. |
 | `support/model_paths.hpp` | Paths to the real model and golden files. |
 | `sanitizers/lsan.supp`, `tsan.supp` | Narrow suppressions for noise from inside the prebuilt ONNX Runtime library. |
-| `unit/*.cpp`, `integration/*.cpp` | The tests (§18). |
+| `unit/*.cpp`, `integration/*.cpp` | The tests (§19). |
 | `data/` | Golden files generated by the Python tools. |
 
 ---
@@ -339,6 +349,10 @@ boundary (fail open).
 has finished, so a reference parameter can point at a temporary that no longer exists. The sanitizers
 caught exactly this in Phase 4 (`follow()` took a `const std::function&`); coroutines that can
 outlive their caller's arguments now take parameters by value or as `shared_ptr`.
+
+**GCC 13 and `co_await`.** GCC 13 crashes (an internal compiler error) on some temporaries inside a
+`co_await` expression — braced initializers, coroutine lambdas. The code therefore builds named
+locals first and then awaits (`const auto msg = …; co_await w.send(…, msg, …)`).
 
 **`concurrent_channel` as a wakeup.** A coalescing follower waits on an Asio
 `experimental::concurrent_channel` with capacity 1: the leader `try_send`s after each new chunk. A
@@ -1009,7 +1023,111 @@ time, during which other inserts queue). The unit test gate is recall@10 ≥ 0.9
 
 ---
 
-## 14. Concurrency model as implemented
+## 14. Phase 6 — persistence and purge
+
+### 14.1 What it adds
+
+1. **Persistence:** the cache survives a restart (a cold cache costs money): a **write-ahead log
+   (WAL)** of every change plus periodic **snapshots**.
+2. **Invalidation:** entries can carry **tags**, and an admin endpoint **purges** entries by
+   tenant, tag or context — e.g. after a policy changes, purge everything tagged `refund-policy`.
+
+### 14.2 How changes reach the disk
+
+- `CacheStore` notifies a `MutationObserver` inside every change it applies (on the writer
+  thread). `Persistence` is that observer:
+  - an insert becomes an **INSERT** record (the full entry, including its 384-d vector, bit-exact);
+  - an eviction, TTL expiry or purge becomes a **DELETE** record keyed by (context, prompt hash);
+  - replacing an entry is just the new INSERT (replay overwrites by key).
+- Each record gets a **log sequence number (LSN)**, increasing by one per record.
+- Records are appended to a memory buffer while the store is locked; between mutations the
+  writer `write`s and `fdatasync`s the buffer, at most every `persistence.fsync_interval_ms`
+  (1 s). That is the worst-case loss on a crash.
+
+On disk, `data/` contains:
+- `wal-<first LSN in hex>.log` — segments; header (magic, version, first LSN, model fingerprint,
+  CRC) then records `[len][crc32c][type][lsn][payload]`;
+- `snapshot.bin` — header (magic, version, LSN, count, fingerprint, CRC) then CRC-framed entries.
+
+### 14.3 Snapshots without stopping the world
+
+Every `snapshot_interval_s` (or when a segment exceeds `max_wal_bytes`) the writer:
+1. syncs the WAL, then copies the list of entry pointers — entries are immutable
+   `shared_ptr<const CacheEntry>`, so this is a cheap, **exactly point-in-time** copy at LSN L;
+2. starts a new segment at L+1;
+3. hands the copy to the **snapshot thread**, which writes `snapshot.bin.tmp`, fsyncs, renames it
+   over `snapshot.bin` (atomic), fsyncs the directory, and deletes segments that are fully
+   covered by the snapshot (first LSN ≤ L).
+
+The writer only pauses for the pointer copy; the serialization needs no lock at all.
+
+### 14.4 Recovery at startup
+
+1. Load `snapshot.bin` (all or nothing). Bad magic/version/CRC or a record-count mismatch → the
+   file is renamed `snapshot.bin.corrupt-<time>` and startup continues without it.
+2. Replay WAL segments in LSN order, skipping records ≤ the snapshot's LSN.
+   - A **torn tail** in the last segment (a crash mid-write) → truncate at the first bad record,
+     keep everything before it.
+   - **Damage in an earlier segment** → stop replay there and set the rest aside. Continuing
+     would skip the DELETEs in the damaged part, which could bring **purged** entries back; a
+     smaller cache is the safe failure.
+3. Entries whose TTL passed meanwhile are skipped; vector indexes are rebuilt by re-inserting.
+4. **Model fingerprint:** every file records the SHA-256 of the model file. If the model changed,
+   stored vectors would be meaningless, so they are dropped and those entries are served by exact
+   match only.
+
+### 14.5 When the disk fails
+
+Any write/fsync/rename error (disk full, read-only filesystem) → persistence is **disabled**:
+the cache keeps working from memory (`semcache_persistence_enabled 0`), the persistence files are
+removed best-effort (so a crash cannot resurrect entries purged while disabled), and every
+`retry_interval_ms` it tries again; on success it writes a full snapshot.
+
+### 14.6 Tags and purge
+
+- `X-Semcache-Tags: refund-policy,faq` on a request attaches those tags to the stored answer.
+  Tags are validated (characters `A-Za-z0-9._:/-`, ≤ 64 bytes, ≤ 16 tags). Invalid tags make the
+  request **BYPASS**: storing an entry the client could not purge later would be worse.
+- `POST /admin/purge` with `Authorization: Bearer $SEMCACHE_ADMIN_KEY` and a JSON filter, any of
+  `{"tenant": "...", "tag": "...", "context": "<64 hex>"}` (all given fields must match; an empty
+  filter is rejected). Without `SEMCACHE_ADMIN_KEY` the endpoint does not exist (404).
+- The purge runs on the writer thread; the reply `{"purged": N}` comes after it was applied, so
+  the next lookup cannot see purged entries. Removals are logged as DELETEs, so purges survive
+  restarts.
+- **Purge guard:** a request that was waiting on upstream when the purge ran would otherwise
+  store its (now outdated) answer afterwards. For `cache.purge_guard_window_s`, inserts from
+  requests that **started before** a purge and match its filter are dropped.
+
+### 14.7 Measured
+
+| 20K entries, 2 KB responses | 200 brute-force partitions | 1 HNSW partition |
+|---|---:|---:|
+| inserts through the writer (WAL on) | 8,237 /s | 1,022 /s |
+| on disk (WAL / snapshot) | 73.6 / 73.4 MB | same |
+| recover from WAL / from snapshot | 0.26 / 0.25 s | 17.1 / 17.7 s |
+| write a snapshot | 1.6 s | 1.2 s |
+
+Disk is cheap; **HNSW insertion** (~0.85 ms per vector here) dominates both the recovery of a big
+partition and live insert throughput into it. Not fixed yet — levers: recover in the background
+while serving passthrough, persist the graph links, or lower `hnsw_ef_construction`.
+
+### 14.8 Tests
+
+`tests/unit/persistence_test.cpp`: CRC-32C check value; codec round trip, every truncation
+rejected, random bytes never crash; restart restores entries and replays deletes (purged entries
+stay purged); snapshot + newer WAL; **torn tail cut at every 7th byte** of the last record;
+bit flip; corrupt snapshot set aside; mid-log damage stops replay; other model → vectors dropped;
+expired entries skipped; read-only directory → memory-only → retry → snapshot; purge guard;
+purge filter combinations.
+`tests/integration/restart_purge_test.cpp`: real proxy — HIT after a restart with zero upstream
+calls; purge by tag and by tenant; purge survives restart; in-flight response not stored after a
+purge; admin auth and validation; endpoint disabled without a key; invalid tags → BYPASS.
+Mutation checks: disabling the purge guard, or not logging removals, each fail a unit test and an
+integration test.
+
+---
+
+## 15. Concurrency model as implemented
 
 **Threads:**
 
@@ -1017,7 +1135,8 @@ time, during which other inserts queue). The unit test gate is recall@10 ≥ 0.9
 |---|---|---|---|
 | I/O threads | `server.io_threads` (0 = all cores) | accept, parse, auth, rate limit, upstream I/O, writing responses, exact lookups, coalescing (leaders record, followers replay) | model inference, cache mutations |
 | Embed pool | `embedder.threads` (4) | tokenize + ORT Run + vector search (brute force or HNSW) | network I/O |
-| Writer | 1 (`cache-writer`) | every cache mutation: inserts, evictions, TTL sweeps, index upgrades/rebuilds | network I/O |
+| Writer | 1 (`cache-writer`) | every cache mutation: inserts, evictions, TTL sweeps, purges, index upgrades/rebuilds; WAL fsync between mutations | network I/O |
+| Snapshot | 1 | serializes a point-in-time copy of entry pointers to `snapshot.bin` | touch the store |
 | Main thread | 1 | setup, then also runs the io_context | — |
 
 **Shared state and protection:**
@@ -1046,7 +1165,7 @@ readers during HNSW upgrades, concurrent HNSW searches, and the herd stress test
 
 ---
 
-## 15. Failure handling: "fail open"
+## 16. Failure handling: "fail open"
 
 Rule: **if upstream could have served the request, the client gets upstream's answer.**
 
@@ -1066,6 +1185,11 @@ Rule: **if upstream could have served the request, the client gets upstream's an
 | Coalescing leader fails upstream | Same error for every follower, one upstream call | leader's 5xx/502/504 |
 | Coalescing leader vanishes before responding | Followers serve themselves | normal response |
 | Writer queue full | Insert dropped (request already served) | — (`semcache_store_dropped_total`) |
+| Disk full / write error | Persistence off, memory-only, retried | — (`semcache_persistence_enabled 0`) |
+| Corrupt snapshot at startup | Set aside, start without it | — |
+| Torn WAL tail at startup | Truncated at first bad record | — |
+| Model changed between runs | Stored vectors dropped, exact match only | — |
+| Invalid `X-Semcache-Tags` | Not stored | `BYPASS` |
 | Too many in-flight requests | The one place we fail closed | 503 + `Retry-After` |
 | Over rate limit | — | 429 + `Retry-After` |
 | Body too large | — | 413 |
@@ -1074,7 +1198,7 @@ Rule: **if upstream could have served the request, the client gets upstream's an
 
 ---
 
-## 16. Configuration reference
+## 17. Configuration reference
 
 Sections (see `config/semcache.example.toml` for every key with comments):
 
@@ -1085,7 +1209,9 @@ Sections (see `config/semcache.example.toml` for every key with comments):
 - `[cache]`: enabled, similarity_threshold (0.90), history_k (2), max_temperature (2.0),
   default_ttl_s (86400), max_bytes (1 GiB), max_response_bytes (64 KiB), store_finish_reasons,
   restream_chunk_chars (16), restream_delay_ms (0), sweep_interval_ms (60000),
-  writer_queue_capacity (4096)
+  writer_queue_capacity (4096), max_tags_per_entry (16), max_tag_bytes (64), purge_guard_window_s (300)
+- `[persistence]`: enabled (true), dir ("data"), snapshot_interval_s (300), fsync_interval_ms (1000),
+  retry_interval_ms (30000), max_wal_bytes (256 MiB)
 - `[index]`: kind (`auto` | `brute` | `hnsw`), hnsw_min_partition_size (5000), hnsw_m (16),
   hnsw_ef_construction (200), hnsw_ef_search (64), hnsw_max_tombstone_ratio (0.25), hnsw_seed (42)
 - `[coalescer]`: enabled (true), max_waiters_per_flight (1000)
@@ -1094,11 +1220,12 @@ Sections (see `config/semcache.example.toml` for every key with comments):
 - `[[tenants]]`: id, key_env, optional max_bytes, optional ttl_s
 
 Env override example: `SEMCACHE_CACHE__SIMILARITY_THRESHOLD=0.85`. Secrets:
-`SEMCACHE_UPSTREAM_API_KEY` and the variables named by `key_env`.
+`SEMCACHE_UPSTREAM_API_KEY`, `SEMCACHE_ADMIN_KEY` (enables `/admin/purge`) and the variables named
+by `key_env`.
 
 ---
 
-## 17. Observability: logs, metrics, endpoints
+## 18. Observability: logs, metrics, endpoints
 
 **Log line per request** (JSON): `ts, level, msg="request", req_id, tenant, status, cache,
 streamed, latency_ms, upstream_ms, upstream_error, bytes_in, [similarity], [bypass_reason],
@@ -1120,14 +1247,17 @@ streamed, latency_ms, upstream_ms, upstream_error, bytes_in, [similarity], [bypa
   `semcache_coalesce_independent_total`, `semcache_writer_queue_depth`, `semcache_store_dropped_total`
 - index: `semcache_index_hnsw_partitions`, `semcache_index_rebuilds_total`,
   `semcache_index_rebuild_seconds`
+- persistence: `semcache_persistence_enabled`, `semcache_wal_bytes`, `semcache_snapshots_total`,
+  `semcache_snapshot_seconds`, `semcache_persistence_errors_total`,
+  `semcache_persistence_recovery_total{result}`, `semcache_evictions_total{reason="purge"}`
 
-**Endpoints:** `/healthz`, `/readyz`, `/stats`, `/metrics`.
+**Endpoints:** `/healthz`, `/readyz`, `/stats`, `/metrics`, `POST /admin/purge` (admin key).
 
 ---
 
-## 18. Testing: how we know it works
+## 19. Testing: how we know it works
 
-**198 tests**, run under three builds (debug, ASan+UBSan, TSan).
+**221 tests**, run under three builds (debug, ASan+UBSan, TSan).
 
 **Unit tests (`tests/unit/`):**
 
@@ -1149,6 +1279,7 @@ streamed, latency_ms, upstream_ms, upstream_error, bytes_in, [similarity], [bypa
 | `cache_store_test.cpp` | exact/nearest isolation, exact-only entries, TTL lazy + sweep, per-tenant TTL, replace, CLOCK second chance, tenant quota, too-large, evicted entry still valid for its reader, **4 readers + 1 writer** (TSan), auto upgrade to HNSW, tombstone rebuild (deduplicated), readers during upgrades |
 | `cache_writer_test.cpp` | inserts applied asynchronously in order, callback always runs, full queue drops + counts, stop applies queued work, expiry on the writer |
 | `coalescer_test.cpp` | leader/follower roles and retire, complete replay with own headers, live stream replay, leader gone before head → serve alone, mid-stream abort → error event, follower cap, leader keeps going for followers, bounded log |
+| `persistence_test.cpp` | formats and fault injection on real files (§14.8) |
 | `worker_pool_test.cpp` | runs on pool thread and resumes on caller, exceptions, full queue rejects immediately, stop completes every caller |
 | `completion_codec_test.cpp` | reassembly at random chunk boundaries, tool-call merging, incomplete/error streams, overflow, storability rules, fresh ids, **re-stream round trip** |
 
@@ -1161,6 +1292,7 @@ streamed, latency_ms, upstream_ms, upstream_error, bytes_in, [similarity], [bypa
 | `failure_test.cpp` | 5xx passthrough, unreachable → 502, first-byte/total/idle timeouts, reset mid-stream, oversized response, overload → 503, shutdown cancels hung upstream calls |
 | `cache_test.cpp` | MISS then exact HIT without upstream call; paraphrase above/below threshold; configurable threshold; streamed miss served to both modes; tenants isolated; different context misses; bypass header; uncacheable requests; cache disabled; errors and interrupted streams never stored; embedder failure fails open; too-long prompt exact-only; no-embedder mode; full embed queue fails open; `/stats` and metrics |
 | `semantic_model_test.cpp` | the **real model** end to end: rewordings HIT, different questions MISS |
+| `restart_purge_test.cpp` | restart keeps HITs, purge by tag/tenant, purge durable, in-flight guard, admin auth, invalid tags (§14.8) |
 | `herd_test.cpp` | coalescing under herds (§12.8): 50 → 1 upstream call, live streaming followers, shared errors, cap, isolation, leader hang-up, mixed-traffic stress |
 
 **Test helpers:** `TestEnv` starts mock + proxy on random ports in-process and drains them on
@@ -1169,11 +1301,13 @@ demand, and can block (to fill the queue).
 
 **Mutation checks** (break the code on purpose, confirm tests fail): removing the tenant from the
 context key (unit + cross-tenant integration test fail); disabling coalescing (8 of 12 herd tests
-fail); letting a leader stop when its client leaves (unit test + a dedicated integration test fail).
+fail); letting a leader stop when its client leaves (unit test + a dedicated integration test fail);
+disabling the purge guard, or not logging removals to the WAL (a unit and an integration test fail
+for each).
 
 ---
 
-## 19. Measurements so far
+## 20. Measurements so far
 
 All from reproducible scripts; raw JSON under `bench/results/`. Machine: i7-1165G7 laptop under
 WSL2, which measured well below the CPU's capability (~35 GFLOP/s single-core).
@@ -1211,9 +1345,12 @@ gate) — not adopted.
 **HNSW (Phase 5):** see the table in §13.5 — recall@10 = 1.0 at ef=64 on synthetic clustered
 data up to 50K vectors; p50 224 µs vs 1,451 µs brute force at 10K; auto switch at 5,000 vectors.
 
+**Persistence (Phase 6):** see §14.7 — 20K entries recover in 0.26 s with brute-force partitions,
+~17 s as one HNSW partition; ~3.7 KB on disk per entry.
+
 ---
 
-## 20. Known weaknesses and what comes next
+## 21. Known weaknesses and what comes next
 
 **Known weaknesses:**
 - Embedding is slow on this laptop: above the 10 ms HIT budget for longer prompts. Re-measure on
@@ -1226,19 +1363,23 @@ data up to 50K vectors; p50 224 µs vs 1,451 µs brute force at 10K; auto switch
   thread; inserts queue (and may be dropped) during an upgrade or tombstone rebuild.
 - Coalescing is exact-key only; herds of *paraphrases* each go upstream (ADR-009).
 - Followers receive the leader's response id (by design: identical response).
+- Startup recovery of a large HNSW partition takes ~17 s per 20K vectors here (graph rebuilt from
+  vectors), and the server only starts listening afterwards.
+- Purge by tag scans all entries (fine at the design's ~200K entries; no tag index).
+- Removing files when persistence is disabled is best effort; if that also fails, a crash before
+  the retry succeeds could bring back entries purged meanwhile.
 - Streamed misses without `include_usage` store no usage → tokens saved is undercounted.
 - `/stats` percentiles are bucket estimates.
-- CI has not yet run on GitHub.
+- CI runs on GitHub for every push (debug, release, ASan, TSan); Phase 6 was not yet pushed when this was written.
 
 **Next phases:**
-6. Persistence (snapshot + write-ahead log), purge by tag/tenant.
 7. Evaluation: QQP + synthetic FAQ, hit vs false-hit curve, throughput, cost model.
 8. Dashboard.
 9. Docker, deploy docs, README.
 
 ---
 
-## 21. How to build, run and test
+## 22. How to build, run and test
 
 ```bash
 # one-time setup
@@ -1247,7 +1388,7 @@ scripts/fetch-model.sh               # model + vocab, hash-checked
 
 # build (ALWAYS -j4 on this machine)
 cmake --preset debug && cmake --build build/debug -j4
-ctest --test-dir build/debug         # 198 tests
+ctest --test-dir build/debug         # 221 tests
 
 cmake --preset asan && cmake --build build/asan -j4 && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j4 && ctest --test-dir build/tsan
@@ -1265,6 +1406,10 @@ cmake --preset release && cmake --build build/release -j4
 bench/run_embed_bench.sh
 ./build/release/semcache_bench_index --benchmark_repetitions=5
 ./build/release/semcache_hnsw_eval --sizes 1000,5000,10000 --queries 500 --out hnsw.json
+./build/release/semcache_persist_eval --entries 20000 --partitions 200
+
+# purge (needs SEMCACHE_ADMIN_KEY set when the server started)
+curl -s -H "Authorization: Bearer $SEMCACHE_ADMIN_KEY" -d '{"tag":"faq"}' localhost:8080/admin/purge
 
 # Python tooling (only to regenerate golden files / tables)
 python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
@@ -1274,7 +1419,7 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 
 ---
 
-## 22. Glossary
+## 23. Glossary
 
 | Term | Meaning |
 |---|---|
@@ -1305,4 +1450,10 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 | **Writer thread** | The one thread allowed to change the cache; everyone else submits work to its queue. |
 | **Recall@k** | Share of the true k nearest neighbours that an approximate search returns (1.0 = all). |
 | **M / ef** | HNSW links per node / beam width (how many candidates a search keeps). |
+| **WAL / LSN** | Write-ahead log: an append-only record of every change / its sequence number. |
+| **Snapshot** | A full copy of the cache at one LSN; the WAL after it brings recovery up to date. |
+| **fsync / fdatasync** | Ask the OS to actually put written bytes on the disk (not just in its cache). |
+| **Torn write** | A record only partly written when the process or machine died. |
+| **CRC-32C** | A checksum that detects corrupted or torn records. |
+| **Purge guard** | Drops answers that were being computed while a matching purge ran. |
 | **Tombstone** | A deleted item kept in place (marked dead) because removing it outright is expensive or unsafe. |

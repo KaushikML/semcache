@@ -73,11 +73,15 @@ Source of truth for design: `docs/design.md`. Decisions: `docs/adr/`.
 - Phase 4 (coalescing + concurrency): done. `CacheWriter` single writer thread; `Coalescer` (flight
   key = context + prompt hash + stream flags; leader records via `LeaderWriter`, followers replay
   live; flight retired after the insert is applied). Coroutines take parameters by value.
-- **Phase 5 (HNSW): implemented, awaiting review.** `HnswIndex` (Malkov & Yashunin; heuristic
-  neighbour selection; tombstone deletes; thread_local visited set). `CacheStore` honours
-  `index.kind` (brute/hnsw/auto); auto upgrades a partition at `hnsw_min_partition_size = 5000`
-  (measured); upgrades and tombstone rebuilds are built off-lock on the writer and swapped in.
-  `bench/hnsw_eval.cpp`: recall@10 = 1.0 at ef=64 (synthetic clusters), p50 224 µs vs BF 1.45 ms
-  at 10K. Known cost: super-linear build (2.9 s at 5K, 100 s at 50K) on the writer thread.
-  Deferred: tags/purge (Phase 6), `/stats/stream` + recent-requests ring (Phase 8).
+- Phase 5 (HNSW): done. `HnswIndex`; `index.kind` auto upgrades a partition at 5000 vectors
+  (measured), built off-lock on the writer. Recall@10 = 1.0 at ef=64 on synthetic clusters.
+- **Phase 6 (persistence + invalidation): implemented, awaiting review.** `src/persist/`: CRC32C,
+  bounds-checked codec, WAL segments + snapshot (ADR-008 notes). Store notifies a `MutationObserver`
+  (writer thread) => WAL INSERT/DELETE; snapshots are point-in-time pointer copies serialized on a
+  snapshot thread; recovery = snapshot + replay > LSN, torn tail truncated, mid-log damage stops
+  replay, model fingerprint drops foreign vectors, disk errors => memory-only + retry.
+  `X-Semcache-Tags` (invalid => BYPASS), `POST /admin/purge` (SEMCACHE_ADMIN_KEY; tenant/tag/context),
+  purge guard drops in-flight inserts. Measured: 20K entries recover in 0.26 s (brute force) but
+  ~17 s for one HNSW partition (graph rebuild); writer ~1K inserts/s into a large HNSW partition.
+  Deferred: `/stats/stream` + recent-requests ring (Phase 8).
 - Python tooling: `python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt`.
