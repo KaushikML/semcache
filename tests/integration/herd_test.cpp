@@ -122,7 +122,7 @@ TEST(Herd, TenantsAndUncacheableRequestsNeverCoalesce) {
 
 TEST(Herd, LeaderSemanticHitIsSharedWithFollowers) {
   TestEnv env(slow_mock(100));
-  env.fake_embedder().alias("How do I get my money back?", "What is your refund policy?", 0.95f);
+  env.fake_embedder().alias("How do I get my money back?", "What is your refund policy?", 0.985f);
   auto first = env.chat("What is your refund policy?");
   auto rs = request_many(env.port(), copies({.body = chat_body("How do I get my money back?")}, 10));
   const auto expected = json::parse(first.body)["choices"][0]["message"]["content"];

@@ -37,7 +37,7 @@ queue_capacity = 1024              # pending embeds; when full, requests fail op
 
 [cache]
 enabled = true
-similarity_threshold = 0.90        # cosine; placeholder until Phase 7 measures the hit/false-hit curve
+similarity_threshold = 0.97        # cosine; <= 1% false hits on QQP (bench/results/phase7). Lower = more hits, more wrong answers
 history_k = 2                      # prior non-system messages in the context key; -1 = all
 max_temperature = 2.0              # requests above this are not cached
 default_ttl_s = 86400

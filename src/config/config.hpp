@@ -66,7 +66,9 @@ using Seconds = std::chrono::seconds;
 
 struct CacheConfig {
   bool enabled = true;
-  float similarity_threshold = 0.90f;  // placeholder until Phase 7 measures the hit/false-hit curve
+  // Measured in Phase 7 (bench/results/phase7): the lowest threshold with <= 1% false hits on
+  // QQP's non-duplicate pairs for all-MiniLM-L6-v2. Lower it per deployment only with your own data.
+  float similarity_threshold = 0.97f;
   int history_k = 2;                   // prior non-system messages hashed into the context key; -1 = all
   double max_temperature = 2.0;        // requests above this are not cached
   Seconds default_ttl{86'400};

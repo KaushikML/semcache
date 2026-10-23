@@ -40,12 +40,12 @@ TEST(Cache, MissThenExactHitWithoutCallingUpstream) {
 
 TEST(Cache, ParaphraseAboveThresholdIsASemanticHit) {
   TestEnv env;  // threshold 0.90
-  env.fake_embedder().alias("How do I get my money back?", "What is your refund policy?", 0.95f);
+  env.fake_embedder().alias("How do I get my money back?", "What is your refund policy?", 0.985f);
   auto first = env.chat("What is your refund policy?");
   auto para = env.chat("How do I get my money back?");
   ASSERT_EQ(para.status, 200u);
   EXPECT_EQ(para.header("x-semcache"), "HIT");
-  EXPECT_EQ(para.header("x-semcache-similarity"), "0.9500");
+  EXPECT_EQ(para.header("x-semcache-similarity"), "0.9850");
   EXPECT_EQ(content_of(para), content_of(first)) << "the cached answer, not a fresh mock answer";
   EXPECT_EQ(env.mock().chat_requests(), 1u);
 }
