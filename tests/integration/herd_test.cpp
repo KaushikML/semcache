@@ -39,7 +39,7 @@ TEST(Herd, IdenticalRequestsMakeOneUpstreamCall) {
   EXPECT_EQ(bodies.size(), 1u) << "followers see exactly the leader's response";
   EXPECT_EQ(env.mock().chat_requests(), 1u);
 
-  env.flush();
+  env.settle(0);
   EXPECT_EQ(env.chat("What is your refund policy?").header("x-semcache"), "HIT");
   EXPECT_EQ(env.mock().chat_requests(), 1u);
 }
@@ -167,7 +167,7 @@ TEST(Herd, LeaderClientLeavingDoesNotCancelTheSharedCall) {
     EXPECT_EQ(sse_events(r.body).back(), "[DONE]") << "followers get the full stream";
     EXPECT_EQ(r.header("x-semcache"), "COALESCED");
   }
-  env.flush();
+  env.settle(0);
   EXPECT_EQ(env.chat("Explain UDP", true).header("x-semcache"), "HIT") << "and the response was still stored";
   EXPECT_EQ(env.mock().chat_requests(), 1u);
 }

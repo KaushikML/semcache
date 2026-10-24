@@ -136,6 +136,17 @@ class TestEnv {
   [[nodiscard]] const RecoveryReport& recovery() const { return recovery_; }
   // Waits until every cache insert submitted so far is applied (inserts are asynchronous).
   void flush() { writer_->flush(); }
+  // After a response arrives, the proxy may still be finishing that request: submitting its insert
+  // and retiring its coalescing flight happen after the last byte is written. Waits until the
+  // sessions opened since `sessions_before` have ended, then until their inserts are applied, so a
+  // following request is not served COALESCED from a flight that has already finished.
+  void settle(std::size_t sessions_before) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (proxy_->active_sessions() > sessions_before && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    flush();
+  }
 
   // Request helpers that also flush, so a following request sees the stored entry.
   ClientResponse chat(const std::string& prompt, bool stream = false, nlohmann::json extra = nlohmann::json::object());
@@ -282,14 +293,16 @@ inline std::string assembled_content(const std::vector<nlohmann::json>& events) 
 }
 
 inline ClientResponse TestEnv::chat(const std::string& prompt, bool stream, nlohmann::json extra) {
+  const auto before = proxy_->active_sessions();
   auto r = test::chat(port(), prompt, stream, std::move(extra));
-  flush();
+  settle(before);
   return r;
 }
 
 inline ClientResponse TestEnv::request(ClientRequest r) {
+  const auto before = proxy_->active_sessions();
   auto res = test::request(port(), std::move(r));
-  flush();
+  settle(before);
   return res;
 }
 

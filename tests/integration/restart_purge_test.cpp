@@ -102,7 +102,7 @@ TEST(Purge, ResponseInFlightDuringAPurgeIsNotStored) {
   std::this_thread::sleep_for(std::chrono::milliseconds(100));  // the request is waiting on upstream
   ASSERT_EQ(purge(env, R"({"tag":"faq"})").status, 200u);
   EXPECT_EQ(slow.get().header("x-semcache"), "MISS");
-  env.flush();
+  env.settle(0);
   EXPECT_EQ(env.request(tagged("refund policy?", "faq")).header("x-semcache"), "MISS")
       << "the answer computed before the purge must not reappear";
 }
