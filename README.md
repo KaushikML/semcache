@@ -156,3 +156,8 @@ used only for tooling (golden files, evaluation, plots, browser test), never in 
 - Plain HTTP only; terminate TLS in front of it ([`docs/deploy.md`](docs/deploy.md)).
 
 More in [`docs/design.md` §14](docs/design.md) and [`docs/WALKTHROUGH.md`](docs/WALKTHROUGH.md).
+
+## License
+
+MIT, see [`LICENSE`](LICENSE). The all-MiniLM-L6-v2 model (downloaded, not committed) is
+Apache-2.0; ONNX Runtime is MIT.
