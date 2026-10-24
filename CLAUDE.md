@@ -85,10 +85,16 @@ Source of truth for design: `docs/design.md`. Decisions: `docs/adr/`.
   (`semcache_loadgen` + `tools/run_load_eval.py`): exact HIT 24.5K rps p50 1 ms; semantic/MISS
   embedding-bound (~300 rps); mixed workload -81% upstream calls; herd 50x20: 20 vs 1000 upstream
   calls. HNSW recall@10 on real QQP vectors >= 0.995 at ef=64. Cost model: `tools/cost_model.py`.
-- **Phase 8 (dashboard): implemented, awaiting review.** `web/` embedded at build time
+- Phase 8 (dashboard): done. `web/` embedded at build time
   (`cmake/embed_web.cmake`, ADR-010), `/dashboard` with same-origin CSP, `/stats` recent ring (no
   prompts) + `/stats/stream` (SSE, capped), demo mode safety (allow-listed mock upstream, public
   `demo` tenant, bounded per-IP limiter, prompt cap, memory cap, `POST /demo/reset`).
   `docs/demo-script.md`. Browser E2E: `tools/dashboard_e2e.py` (Playwright; Chromium libs unpacked
   without root, see demo-script). Test harness `TestEnv::settle` fixes a COALESCED-vs-HIT race.
+- **Phase 9 (packaging): implemented, awaiting review.** Install rules (`$ORIGIN/../lib`, `--strip`),
+  two-stage `Dockerfile` (pinned, JOBS=4, non-root, model baked in, bash `/dev/tcp` healthcheck),
+  `docker-compose.yml` (demo + mock, read-only, cap_drop), `config/docker*.toml`,
+  `scripts/docker-smoke.sh` + CI `docker` job, `docs/deploy.md`, `README.md`, memory eval
+  (`bench/results/phase9`: 167 MiB idle, ~8 KB RSS per 2 KB-answer entry). Docker is NOT running
+  on the dev box (Docker Desktop installed, no WSL integration): image build + smoke test not run locally.
 - Python tooling: `python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt`.

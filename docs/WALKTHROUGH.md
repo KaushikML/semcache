@@ -1,12 +1,12 @@
-# semcache — complete walkthrough (Phases 0–7)
+# semcache — complete walkthrough (Phases 0–9)
 
 This document explains everything built so far: the idea, the design, every file, every library,
 the C++ techniques used, how a request flows through the code, how concurrency and failures are
 handled, how it is tested, and what was measured. Read it top to bottom once; afterwards use the
 file map (§4) as an index.
 
-Status at time of writing: Phases 0–7 done; Phase 8 (dashboard + demo mode) implemented and awaiting review.
-221 automated tests pass in debug, AddressSanitizer/UBSan and ThreadSanitizer builds.
+Status at time of writing: Phases 0–8 done; Phase 9 (packaging) implemented and awaiting review.
+244 automated tests pass in debug, AddressSanitizer/UBSan and ThreadSanitizer builds.
 
 ---
 
@@ -28,15 +28,16 @@ Status at time of writing: Phases 0–7 done; Phase 8 (dashboard + demo mode) im
 14. [Phase 6 — persistence and purge](#14-phase-6--persistence-and-purge)
 15. [Phase 7 — evaluation](#15-phase-7--evaluation)
 16. [Phase 8 — the dashboard and demo mode](#16-phase-8--the-dashboard-and-demo-mode)
-17. [Concurrency model as implemented](#17-concurrency-model-as-implemented)
-18. [Failure handling: "fail open"](#18-failure-handling-fail-open)
-19. [Configuration reference](#19-configuration-reference)
-20. [Observability: logs, metrics, endpoints](#20-observability-logs-metrics-endpoints)
-21. [Testing: how we know it works](#21-testing-how-we-know-it-works)
-22. [Measurements so far](#22-measurements-so-far)
-23. [Known weaknesses and what comes next](#23-known-weaknesses-and-what-comes-next)
-24. [How to build, run and test](#24-how-to-build-run-and-test)
-25. [Glossary](#25-glossary)
+17. [Phase 9 — packaging: Docker, deploy guide, README](#17-phase-9--packaging-docker-deploy-guide-readme)
+18. [Concurrency model as implemented](#18-concurrency-model-as-implemented)
+19. [Failure handling: "fail open"](#19-failure-handling-fail-open)
+20. [Configuration reference](#20-configuration-reference)
+21. [Observability: logs, metrics, endpoints](#21-observability-logs-metrics-endpoints)
+22. [Testing: how we know it works](#22-testing-how-we-know-it-works)
+23. [Measurements so far](#23-measurements-so-far)
+24. [Known weaknesses and what comes next](#24-known-weaknesses-and-what-comes-next)
+25. [How to build, run and test](#25-how-to-build-run-and-test)
+26. [Glossary](#26-glossary)
 
 ---
 
@@ -149,6 +150,9 @@ cache can only ever remove work, never break a request.
 
 | File | What it is |
 |---|---|
+| `README.md` | Front page: what it is, quick start, measured results, limitations. |
+| `Dockerfile`, `.dockerignore` | Two-stage image: pinned build, small non-root runtime with the model baked in (§17). |
+| `docker-compose.yml` | Demo stack: semcache (demo mode) + mock LLM. |
 | `CLAUDE.md` | Working notes/rules for the AI assistant: stack, design rules, phases, status, build limits (`-j4`). |
 | `PROMPT.md` | Your original project brief (git-ignored by your choice). |
 | `CMakeLists.txt` | The build: defines the core library, the `semcache` and `semcache-mock` executables, benchmarks and tests. |
@@ -172,6 +176,7 @@ cache can only ever remove work, never break a request.
 | File | What it does |
 |---|---|
 | `bootstrap-vcpkg.sh` | Clones vcpkg into `external/vcpkg` at the exact commit in `vcpkg.json` and builds the `vcpkg` tool. |
+| `docker-smoke.sh` | Builds and starts the compose stack and checks it end to end (§17.4); also run in CI. |
 | `fetch-model.sh` | Downloads `onnx/model.onnx` and `vocab.txt` for all-MiniLM-L6-v2 from HuggingFace at a pinned git revision, and checks both SHA-256 hashes. Skips files already present with the right hash. |
 
 ### `config/`
@@ -179,6 +184,7 @@ cache can only ever remove work, never break a request.
 | File | What it does |
 |---|---|
 | `semcache.example.toml` | Documented example of every config key. |
+| `docker.toml`, `docker-demo.toml` | Image configs: live mode against OpenAI (default) and demo mode against the `mock` service. |
 | `dev.toml` | Local development config: demo mode, port 8080, upstream = mock on 9090, one tenant `dev` whose key is in `SEMCACHE_KEY_DEV`. |
 
 ### `docs/`
@@ -187,6 +193,7 @@ cache can only ever remove work, never break a request.
 |---|---|
 | `design.md` | The source of truth: problem, requirements, non-goals, sizing math, architecture, data flows, concurrency, failure modes, observability, security, multi-node story, config, tests. Measured numbers are recorded next to the estimates. |
 | `adr/000-template.md` … `adr/012-…` | Architecture Decision Records (see §8). |
+| `deploy.md` | Phase 9: image, demo, live deployment, sizing, persistence, monitoring, shutdown, security. |
 | `demo-script.md` | Phase 8: how to run and present the dashboard; what demo mode enforces. |
 | `img/dashboard.png` | Screenshot taken by `tools/dashboard_e2e.py`. |
 | `WALKTHROUGH.md` | This file. |
@@ -259,6 +266,7 @@ cache can only ever remove work, never break a request.
 | `analyze_threshold.py` | Phase 7: hit vs false-hit curves (QQP pairs, FAQ cache replay) and plots. |
 | `run_load_eval.py` | Phase 7: starts the real binaries per scenario and drives the C++ load generator. |
 | `cost_model.py` | Phase 7: savings vs compute, from measured rates + labelled assumptions. |
+| `run_memory_eval.py` | Phase 9: memory and restart time of the installed tree (`bench/results/phase9`). |
 | `dashboard_e2e.py` | Phase 8: drives the real binaries and the dashboard in headless Chromium (Playwright); optional screenshot. |
 | `gen_bert_tables.py` | Runs every Unicode code point through HuggingFace's normalizer and pre-tokenizer; writes `src/embed/bert_tables.inc` and `tests/data/normalizer_blocks.txt`; `--diff` mode for debugging mismatches. |
 
@@ -274,7 +282,7 @@ cache can only ever remove work, never break a request.
 | `persist_eval.cpp` | WAL replay, snapshot write and snapshot load times and sizes for N entries. |
 | `hnsw_eval.cpp` | Brute force vs HNSW per partition size: recall@10, p50/p99 latency for several `ef`, build time, memory. |
 | `run_embed_bench.sh` | Runs the embed benchmark, saves JSON plus machine details. |
-| `results/phase2/` … `phase7/` | Raw JSON results, machine info, and a README with the tables and takeaways. |
+| `results/phase2/` … `phase9/` | Raw JSON results, machine info, and a README with the tables and takeaways. |
 
 ### `tests/`
 
@@ -286,7 +294,7 @@ cache can only ever remove work, never break a request.
 | `support/recording_writer.hpp` | A `ResponseWriter` that just records calls, for coalescer tests without sockets. |
 | `support/model_paths.hpp` | Paths to the real model and golden files. |
 | `sanitizers/lsan.supp`, `tsan.supp` | Narrow suppressions for noise from inside the prebuilt ONNX Runtime library. |
-| `unit/*.cpp`, `integration/*.cpp` | The tests (§21). |
+| `unit/*.cpp`, `integration/*.cpp` | The tests (§22). |
 | `data/` | Golden files generated by the Python tools. |
 
 ---
@@ -1335,7 +1343,93 @@ All enforced in config validation (`finalize_config`) and the proxy, not in the 
 
 ---
 
-## 17. Concurrency model as implemented
+## 17. Phase 9 — packaging: Docker, deploy guide, README
+
+Goal: someone who clones the repository gets a working demo with one command, and an operator
+knows how to run it in front of a real API: image, configuration, sizing, persistence,
+monitoring, shutdown, security. User guide: `docs/deploy.md`; front page: `README.md`.
+
+### 17.1 Install layout (`CMakeLists.txt`)
+
+`cmake --install build/release --prefix P --strip` produces a relocatable tree:
+`P/bin/semcache`, `P/bin/semcache-mock`, `P/lib/libonnxruntime.so.1`,
+`P/share/semcache/semcache.example.toml`. The binaries carry `RUNPATH $ORIGIN/../lib`, so they
+find ONNX Runtime next to themselves wherever the tree is copied (the build tree's binaries point
+at `.cache/onnxruntime` instead). Stripping takes `semcache` from 97 MB (RelWithDebInfo) to 11 MB.
+
+Two facts that made the runtime image simple, both checked with `readelf`/`ldd`/`strings`:
+- OpenSSL comes from vcpkg and is **linked statically**; its compiled-in directory is `/etc/ssl`,
+  so Ubuntu's `ca-certificates` is all the image needs for upstream TLS (and `SSL_CERT_FILE` works
+  as an override). Verified: HTTPS to example.com succeeds with the system store and fails closed
+  (502) with a bundle that lacks its root.
+- AVX2 code is chosen at runtime per function (`__attribute__((target))`), with no `-march=native`,
+  so an image built on one CPU runs on any x86-64.
+
+### 17.2 The image (`Dockerfile`, `.dockerignore`)
+
+Two stages on Ubuntu 24.04:
+1. **build:** toolchain → vcpkg at the pinned baseline + `vcpkg install` (its own layer, so code
+   edits do not rebuild Boost/OpenSSL; BuildKit cache mount for vcpkg's binary cache) → model via
+   `scripts/fetch-model.sh` (SHA-256 checked) → `cmake --preset release` with tests and benchmarks
+   off → build with `JOBS=4` (the RAM rule from CLAUDE.md, also `VCPKG_MAX_CONCURRENCY`) →
+   `cmake --install --strip` into `/opt/semcache`.
+2. **runtime:** `ca-certificates`, a system user `semcache` (uid 10001), `/opt/semcache` with the
+   model baked in, two configs, `/var/lib/semcache/data` owned by the user. `HEALTHCHECK` uses
+   bash's `/dev/tcp` (no curl in the image). Entrypoint `semcache --config /etc/semcache/semcache.toml`.
+
+`.dockerignore` keeps the build context small: no `build/`, `external/`, `vcpkg_installed/`,
+`models/`, `.venv/`, docs or results; everything is fetched pinned inside the build.
+
+### 17.3 Configs for containers (`config/docker.toml`, `config/docker-demo.toml`)
+
+- `docker.toml` (image default): live mode, `https://api.openai.com`, absolute model paths,
+  persistence in `/var/lib/semcache/data`, one tenant `default` whose key comes from
+  `SEMCACHE_KEY_DEFAULT`. Missing it stops startup: `config error: tenants.default: env var
+  SEMCACHE_KEY_DEFAULT is not set`.
+- `docker-demo.toml`: demo mode against `http://mock:9090` (in the default allow-list).
+- Both are parsed by the unit test `Config.ShippedConfigFilesAreValid`, with the example and dev
+  configs.
+
+### 17.4 Compose and the smoke test
+
+`docker-compose.yml` runs two services from the same image: `mock` (entrypoint `semcache-mock`,
+health-checked) and `semcache` (demo config, waits for the mock to be healthy, port published on
+127.0.0.1 only, named volume for the data directory, `stop_grace_period` 15 s > the 5 s drain).
+Both run with a read-only root filesystem, `cap_drop: [ALL]` and `no-new-privileges`.
+
+`scripts/docker-smoke.sh` brings the stack up and checks: healthy and ready, non-root user,
+dashboard + CSP, MISS → HIT, the cache survives `docker compose restart` (volume + permissions),
+no prompt text in the logs, exit code 0 on SIGTERM. CI gained a `docker` job that builds the image
+with the GitHub Actions layer cache and runs this script.
+
+### 17.5 Sizing measurement (`tools/run_memory_eval.py`)
+
+Runs the installed tree against the mock (answers of 300 words ≈ 2 KB), stores 10,000 distinct
+prompts in one context, and reads VmRSS/VmHWM from `/proc`. Result
+(`bench/results/phase9/memory.md`): 167 MiB idle with the model loaded; 247 MiB after 10,000
+entries (the cache accounted 40.8 MiB, so RSS grows ~2× the accounted bytes); restart recovered
+in 7.9 s (HNSW graph rebuilt) at 222 MiB; 38.6 MiB on disk. `docs/deploy.md` turns this into a
+starting limit of `200 MiB + 2 × cache.max_bytes`.
+
+A first attempt used templated prompts ("How do I configure option *i* for workspace *j*…").
+Fewer than 99% of them were stored before the timeout: they are close enough to each other that
+many were most likely served as semantic HITs instead of being stored. With 12 random
+vocabulary words per prompt, all 10,000 were stored. The lesson matches Phase 7: what the model
+treats as "the same question" is broader than it looks for templated text.
+
+### 17.6 What was verified, and what was not
+
+- Verified without Docker: install layout and RUNPATH; the exact image healthcheck command
+  against the real binaries; `docker.toml` with env overrides (MISS → HIT, prompt not logged,
+  exit 0 on SIGTERM, missing-key error); TLS with the system CA store; the compose file parses
+  (`docker compose config`); configs parse in unit tests.
+- **Not verified here:** building the image and running `scripts/docker-smoke.sh`. Docker Desktop
+  was installed but not running and not integrated with this WSL distro. CI's `docker` job runs
+  both on the next push.
+
+---
+
+## 18. Concurrency model as implemented
 
 **Threads:**
 
@@ -1373,7 +1467,7 @@ readers during HNSW upgrades, concurrent HNSW searches, and the herd stress test
 
 ---
 
-## 18. Failure handling: "fail open"
+## 19. Failure handling: "fail open"
 
 Rule: **if upstream could have served the request, the client gets upstream's answer.**
 
@@ -1406,7 +1500,7 @@ Rule: **if upstream could have served the request, the client gets upstream's an
 
 ---
 
-## 19. Configuration reference
+## 20. Configuration reference
 
 Sections (see `config/semcache.example.toml` for every key with comments):
 
@@ -1437,7 +1531,7 @@ by `key_env`.
 
 ---
 
-## 20. Observability: logs, metrics, endpoints
+## 21. Observability: logs, metrics, endpoints
 
 **Log line per request** (JSON): `ts, level, msg="request", req_id, tenant, status, cache,
 streamed, latency_ms, upstream_ms, upstream_error, bytes_in, [similarity], [bypass_reason],
@@ -1468,7 +1562,7 @@ streamed, latency_ms, upstream_ms, upstream_error, bytes_in, [similarity], [bypa
 
 ---
 
-## 21. Testing: how we know it works
+## 22. Testing: how we know it works
 
 **244 tests**, run under three builds (debug, ASan+UBSan, TSan), plus the browser test
 `tools/dashboard_e2e.py`.
@@ -1523,7 +1617,7 @@ for each).
 
 ---
 
-## 22. Measurements so far
+## 23. Measurements so far
 
 All from reproducible scripts; raw JSON under `bench/results/`. Machine: i7-1165G7 laptop under
 WSL2, which measured well below the CPU's capability (~35 GFLOP/s single-core).
@@ -1570,7 +1664,7 @@ upstream calls; mixed workload −81% upstream calls.
 
 ---
 
-## 23. Known weaknesses and what comes next
+## 24. Known weaknesses and what comes next
 
 **Known weaknesses:**
 - Embedding is slow on this laptop: above the 10 ms HIT budget for longer prompts. Re-measure on
@@ -1598,12 +1692,14 @@ upstream calls; mixed workload −81% upstream calls.
 - The dashboard's Rush card is limited by the browser's 6 connections per host (§16.1).
 - CI runs on GitHub for every push (debug, release, ASan, TSan); Phase 6 was not yet pushed when this was written.
 
-**Next phase:**
-9. Docker, deploy docs, README.
+**All nine phases are implemented.** Candidate next steps, each to be decided by measurement:
+a stronger embedding model or a re-ranker (recall), storing an exact alias on a semantic HIT,
+persisting HNSW graphs or recovering in the background (startup time), routing by context key
+across nodes (design §11), and re-measuring embedding latency on server hardware.
 
 ---
 
-## 24. How to build, run and test
+## 25. How to build, run and test
 
 ```bash
 # one-time setup
@@ -1645,6 +1741,12 @@ bench/run_embed_bench.sh
 # purge (needs SEMCACHE_ADMIN_KEY set when the server started)
 curl -s -H "Authorization: Bearer $SEMCACHE_ADMIN_KEY" -d '{"tag":"faq"}' localhost:8080/admin/purge
 
+# containers (needs Docker with the compose plugin)
+docker compose up --build                     # demo on http://127.0.0.1:8080/dashboard
+scripts/docker-smoke.sh                       # end-to-end check of the image and compose stack
+cmake --install build/release --prefix /tmp/semcache-install --strip   # image layout without Docker
+.venv/bin/python tools/run_memory_eval.py --prefix /tmp/semcache-install
+
 # Python tooling (only to regenerate golden files / tables)
 python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 .venv/bin/python tools/make_golden.py
@@ -1653,7 +1755,7 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 
 ---
 
-## 25. Glossary
+## 26. Glossary
 
 | Term | Meaning |
 |---|---|
