@@ -29,6 +29,7 @@ add_executable(semcache_unit_tests
   unit/tokenizer_test.cpp
   unit/worker_pool_test.cpp
   unit/embedder_test.cpp
+  unit/web_assets_test.cpp
 )
 target_include_directories(semcache_unit_tests PRIVATE .)
 target_compile_definitions(semcache_unit_tests PRIVATE

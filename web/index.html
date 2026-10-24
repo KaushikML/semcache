@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>semcache dashboard</title>
+  <link rel="stylesheet" href="/dashboard/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <h1>semcache</h1>
+    <p class="tagline">A cache in front of an LLM API. Repeated or reworded questions are answered from
+      the cache in milliseconds; identical questions asked at the same moment share one upstream call.</p>
+  </div>
+  <div class="pills">
+    <span class="pill" id="pill-mode">connecting…</span>
+    <span class="pill" id="pill-embedder">embedder</span>
+    <span class="pill" id="pill-threshold">threshold</span>
+  </div>
+</header>
+
+<main>
+  <section class="tiles" aria-label="Live numbers">
+    <div class="tile"><div class="label">Requests</div><div class="value" id="t-requests">–</div></div>
+    <div class="tile"><div class="label">Served from cache</div><div class="value" id="t-hitrate">–</div>
+      <div class="sub" id="t-hits"></div></div>
+    <div class="tile"><div class="label">Upstream calls avoided</div><div class="value" id="t-avoided">–</div>
+      <div class="sub">cache hits + shared (coalesced)</div></div>
+    <div class="tile"><div class="label">Tokens saved</div><div class="value" id="t-tokens">–</div></div>
+    <div class="tile"><div class="label">Cached answers</div><div class="value" id="t-entries">–</div>
+      <div class="sub" id="t-bytes"></div></div>
+    <div class="tile wide"><div class="label">Typical answer time (recent requests)</div>
+      <div class="compare">
+        <div><span class="badge HIT">cache</span> <span class="value small" id="t-hit-ms">–</span></div>
+        <div><span class="badge MISS">upstream</span> <span class="value small" id="t-miss-ms">–</span></div>
+      </div></div>
+  </section>
+
+  <section class="panel">
+    <h2>See it work</h2>
+    <p class="hint">Each run uses a fresh conversation, so it starts with an empty cache for its context.</p>
+    <div class="scenarios">
+      <article class="scenario" data-scenario="repeat">
+        <h3>1. Repeat</h3>
+        <p>Ask the same question twice. The first goes to the LLM; the second is answered from the cache.</p>
+        <button type="button">Run</button>
+        <ol class="steps"></ol>
+        <p class="verdict"></p>
+      </article>
+      <article class="scenario" data-scenario="reword">
+        <h3>2. Reword</h3>
+        <p>Ask it again in slightly different words. The meaning is compared, not the exact text.</p>
+        <button type="button">Run</button>
+        <ol class="steps"></ol>
+        <p class="verdict"></p>
+      </article>
+      <article class="scenario" data-scenario="trap">
+        <h3>3. The trap</h3>
+        <p>Two questions that look alike but need different answers. This is where semantic caching
+          can be wrong, shown openly.</p>
+        <button type="button">Run</button>
+        <ol class="steps"></ol>
+        <p class="verdict"></p>
+      </article>
+      <article class="scenario" data-scenario="herd">
+        <h3>4. Rush</h3>
+        <p>Send the same new question <span class="herd-n">16</span> times at once. Only one call reaches
+          the LLM: requests that arrive while it runs wait and share its answer (COALESCED); later ones
+          find it cached (HIT). A browser opens at most 6 connections per site, so many land as HITs.</p>
+        <button type="button">Run</button>
+        <ol class="steps"></ol>
+        <p class="verdict"></p>
+      </article>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Try it</h2>
+    <form id="try" class="try" autocomplete="off">
+      <textarea id="try-prompt" rows="2" maxlength="2000" placeholder="Ask something, e.g. What is your refund policy?" required></textarea>
+      <div class="try-row">
+        <label class="check"><input type="checkbox" id="try-stream" checked> stream the answer</label>
+        <label class="key" id="key-row" hidden>API key <input type="password" id="try-key" placeholder="sk-sc-…"></label>
+        <button type="submit">Send</button>
+      </div>
+    </form>
+    <div class="answer" id="try-result" hidden>
+      <div class="meta"><span class="badge" id="try-badge"></span> <span id="try-meta"></span></div>
+      <p id="try-text"></p>
+    </div>
+    <details class="history">
+      <summary>Your questions this session (kept in this browser tab only)</summary>
+      <ol id="history"></ol>
+    </details>
+  </section>
+
+  <section class="panel two">
+    <div>
+      <h2>Cache hit rate over time</h2>
+      <svg id="spark" viewBox="0 0 300 80" preserveAspectRatio="none" role="img" aria-label="Hit rate over time">
+        <polyline id="spark-line" points="" />
+      </svg>
+      <p class="hint" id="spark-caption">waiting for data…</p>
+    </div>
+    <div>
+      <h2>Recent requests</h2>
+      <p class="hint">Server-side view: results and timings only. Prompts are never sent to this page by the server.</p>
+      <table class="recent">
+        <thead><tr><th>time</th><th>result</th><th>status</th><th>latency</th><th>similarity</th></tr></thead>
+        <tbody id="recent"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <button type="button" id="reset" hidden>Reset demo cache</button>
+  <span class="links"><a href="/stats">/stats</a> · <a href="/metrics">/metrics</a> · <a href="/readyz">/readyz</a></span>
+  <span id="status-line"></span>
+</footer>
+<script src="/dashboard/app.js"></script>
+</body>
+</html>

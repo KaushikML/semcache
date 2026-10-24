@@ -23,6 +23,17 @@ find_package(tomlplusplus CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 find_package(utf8proc CONFIG REQUIRED)
 
+# Dashboard files compiled into the binary (ADR-010); regenerated whenever web/ changes.
+file(GLOB SEMCACHE_WEB_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/web/*")
+set(SEMCACHE_WEB_CPP "${CMAKE_BINARY_DIR}/generated/web_assets.cpp")
+add_custom_command(
+  OUTPUT "${SEMCACHE_WEB_CPP}"
+  COMMAND ${CMAKE_COMMAND} "-DOUT=${SEMCACHE_WEB_CPP}" "-DFILES=${SEMCACHE_WEB_FILES}"
+          -P "${CMAKE_SOURCE_DIR}/cmake/embed_web.cmake"
+  DEPENDS ${SEMCACHE_WEB_FILES} "${CMAKE_SOURCE_DIR}/cmake/embed_web.cmake"
+  COMMENT "Embedding dashboard files"
+  VERBATIM)
+
 add_library(semcache_core STATIC
   src/common/sha256.cpp
   src/common/worker_pool.cpp
@@ -53,6 +64,8 @@ add_library(semcache_core STATIC
   src/upstream/http_upstream.cpp
   src/proxy/pipeline.cpp
   src/proxy/proxy_server.cpp
+  src/web/assets.cpp
+  "${SEMCACHE_WEB_CPP}"
 )
 target_include_directories(semcache_core PUBLIC src)
 target_compile_definitions(semcache_core PUBLIC BOOST_ASIO_NO_DEPRECATED BOOST_BEAST_USE_STD_STRING_VIEW)
