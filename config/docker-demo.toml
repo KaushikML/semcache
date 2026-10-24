@@ -1,0 +1,18 @@
+# Demo in containers (/etc/semcache/demo.toml, used by docker-compose.yml): the mock LLM at
+# mock:9090, public demo key, per-address limits (see docs/demo-script.md). Demo mode refuses to
+# start against any upstream not in demo.allowed_upstreams, or with SEMCACHE_UPSTREAM_API_KEY set.
+mode = "demo"
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[upstream]
+base_url = "http://mock:9090"
+
+[embedder]
+model_path = "/opt/semcache/models/all-MiniLM-L6-v2.onnx"
+vocab_path = "/opt/semcache/models/vocab.txt"
+
+[persistence]
+dir = "/var/lib/semcache/data"

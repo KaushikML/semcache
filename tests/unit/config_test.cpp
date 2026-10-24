@@ -134,12 +134,12 @@ TEST(Config, StatsValuesAreValidated) {
 TEST(Config, ShippedConfigFilesAreValid) {
   // SEMCACHE_MODEL_DIR is <repo>/models.
   const std::string repo = std::string(SEMCACHE_MODEL_DIR) + "/..";
-  for (const char* name : {"semcache.example.toml", "dev.toml"}) {
+  for (const char* name : {"semcache.example.toml", "dev.toml", "docker.toml", "docker-demo.toml"}) {
     std::ifstream in(repo + "/config/" + name);
     ASSERT_TRUE(in) << name;
     std::stringstream ss;
     ss << in.rdbuf();
-    EXPECT_NO_THROW((void)load_config_from_string(ss.str(), fake_env({{"SEMCACHE_KEY_ACME", "a"}, {"SEMCACHE_KEY_DEV", "d"}})))
+    EXPECT_NO_THROW((void)load_config_from_string(ss.str(), fake_env({{"SEMCACHE_KEY_ACME", "a"}, {"SEMCACHE_KEY_DEV", "d"}, {"SEMCACHE_KEY_DEFAULT", "k"}})))
         << name;
   }
 }

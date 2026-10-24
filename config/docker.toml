@@ -1,0 +1,24 @@
+# Image default (/etc/semcache/semcache.toml): live mode against OpenAI. See docs/deploy.md.
+# Required env:  SEMCACHE_UPSTREAM_API_KEY, SEMCACHE_KEY_DEFAULT (the key your clients send).
+# Optional env:  SEMCACHE_ADMIN_KEY (enables POST /admin/purge), any SEMCACHE_<SECTION>__<KEY>.
+# For several tenants, mount your own file over this one. Every other key keeps its default
+# (config/semcache.example.toml).
+mode = "live"
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[upstream]
+base_url = "https://api.openai.com"
+
+[embedder]
+model_path = "/opt/semcache/models/all-MiniLM-L6-v2.onnx"
+vocab_path = "/opt/semcache/models/vocab.txt"
+
+[persistence]
+dir = "/var/lib/semcache/data"     # mount a volume here to keep the cache across restarts
+
+[[tenants]]
+id = "default"
+key_env = "SEMCACHE_KEY_DEFAULT"
