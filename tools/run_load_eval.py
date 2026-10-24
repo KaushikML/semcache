@@ -143,7 +143,7 @@ def main():
                 save("exact_hit", {"loadgen": r, "stats": s.stats(), "upstream_calls": s.upstream_calls() - base})
             if want("semantic_hit"):
                 base = s.upstream_calls()
-                r = loadgen(hot, "case", 32, dur)
+                r = loadgen(hot, "variant", 32, dur)
                 save("semantic_hit", {"loadgen": r, "stats": s.stats(), "upstream_calls": s.upstream_calls() - base})
 
     if want("miss"):
@@ -158,7 +158,7 @@ def main():
                 base = s.upstream_calls()
                 r = loadgen(hot, "mix", 64, 2 * dur, ["--new-prompts", fresh, "--mix", "0.5,0.3"])
                 save(name, {"loadgen": r, "stats": s.stats(), "upstream_calls": s.upstream_calls() - base,
-                            "mock_latency_ms": 300, "mix": "50% exact repeat, 30% case variant, 20% new"})
+                            "mock_latency_ms": 300, "mix": "50% exact repeat, 30% accent variant, 20% new"})
 
     if want("herd"):
         for name, env in (("herd_coalescing", {}), ("herd_no_coalescing", {"SEMCACHE_COALESCER__ENABLED": "false"})):
@@ -173,7 +173,7 @@ def main():
                 t0 = time.time()
                 loadgen(big, "once", 16)
                 populate_s = time.time() - t0
-                r = loadgen(big_sample, "case", 16, dur)
+                r = loadgen(big_sample, "variant", 16, dur)
                 save(name, {"loadgen": r, "stats": s.stats(), "upstream_calls": None, "entries": 10000,
                             "populate_s": populate_s, "index_kind": kind})
 

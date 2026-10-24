@@ -63,10 +63,15 @@ lower bounds. Logging at `warn`. 32 connections unless noted.
 | scenario | what is measured | throughput | p50 | p99 | upstream calls |
 |---|---|---:|---:|---:|---:|
 | exact HIT | 197 cached prompts, repeated verbatim | **24,518 req/s** | **1.0 ms** | 8.6 ms | 0 |
-| semantic HIT | random-case variants: new prompt hash, same embedding (sim 1.0) | 307 req/s | 103 ms | 150 ms | 0 |
+| semantic HIT | random-case variants: new prompt hash, same embedding (sim 1.0) ¹ | 307 req/s | 103 ms | 150 ms | 0 |
 | MISS (upstream 0 ms) | 3,000 new prompts: embed + search + forward + store | 262 req/s | 120 ms | 195 ms | 2,953 |
-| mixed, cache on | upstream 300 ms; 50% exact / 30% case variant / 20% new; 64 conns | 490 req/s | 48 ms | 488 ms | 2,868 of 14,936 |
+| mixed, cache on | upstream 300 ms; 50% exact / 30% case variant ¹ / 20% new; 64 conns | 490 req/s | 48 ms | 488 ms | 2,868 of 14,936 |
 | mixed, cache off | same workload, `cache.enabled = false` | 210 req/s | 303 ms | 327 ms | 6,348 of 6,348 |
+
+¹ Measured at commit 89fe25d. Since ADR-013 the exact key folds case, so case variants are now
+exact HITs; `run_load_eval.py` now uses accent variants for this scenario and the mix (one vowel
+accented: the tokenizer strips accents, so the embedding is identical and the exact key differs).
+The numbers in this table were not re-measured.
 
 - Exact HITs never touch the model: 1 ms median through the full HTTP stack.
 - Semantic HITs and MISSes are **embedding-bound**: ~13 ms of CPU per embed on this laptop, and

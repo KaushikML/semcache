@@ -3,15 +3,17 @@
 //
 // Modes (prompts from --prompts, a JSONL file of {"text": ...}):
 //   cycle  worker w sends prompts[w], prompts[w + C], ... repeatedly        -> exact HITs once warm
-//   case   a random prompt with random letter case each time: the uncased tokenizer gives the
-//          same embedding, the prompt hash differs                          -> semantic HITs (sim 1.0)
+//   variant a random prompt with one vowel accented each time: the tokenizer strips accents, so
+//          the embedding is identical, but the exact key differs (it folds case and final
+//          punctuation, not accents; ADR-013)                               -> semantic HITs (sim 1.0)
 //   once   every prompt exactly once across all workers, then stop         -> MISSes / prepopulation
 //   herd   rounds: all C workers send prompts[r] at the same time          -> coalescing
-//   mix    per request: exact repeat / case variant / a new prompt from --new-prompts, by --mix
+//   mix    per request: exact repeat / variant / a new prompt from --new-prompts, by --mix
 // Usage: semcache_loadgen --port P --key K --prompts F --mode M [--concurrency 32] [--duration-s 15]
 //                         [--stream] [--new-prompts F] [--mix 0.5,0.3,0.2] [--rounds N] [--out F]
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -21,6 +23,7 @@
 #include <map>
 #include <random>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -47,7 +50,7 @@ struct Options {
   double duration_s = 15;
   bool stream = false;
   double mix_exact = 0.5;
-  double mix_case = 0.3;
+  double mix_variant = 0.3;
   int rounds = 20;
   std::vector<std::string> prompts;
   std::vector<std::string> new_prompts;
@@ -60,14 +63,19 @@ std::vector<std::string> read_prompts(const std::string& path) {
   return out;
 }
 
-std::string random_case(const std::string& s, std::mt19937& rng) {
-  std::string out = s;
-  for (auto& c : out) {
-    if (std::isalpha(static_cast<unsigned char>(c)) && (rng() & 1)) {
-      c = static_cast<char>(std::isupper(static_cast<unsigned char>(c)) ? std::tolower(c) : std::toupper(c));
-    }
+// One ASCII vowel replaced by its acute-accented form (UTF-8). A prompt without vowels is returned
+// unchanged, and then hits the exact path.
+std::string accent_variant(const std::string& s, std::mt19937& rng) {
+  static constexpr std::string_view kPlain = "aeiouAEIOU";
+  static constexpr std::array<std::string_view, 10> kAccented = {"\xC3\xA1", "\xC3\xA9", "\xC3\xAD", "\xC3\xB3", "\xC3\xBA",
+                                                                 "\xC3\x81", "\xC3\x89", "\xC3\x8D", "\xC3\x93", "\xC3\x9A"};
+  std::vector<std::size_t> vowels;
+  for (std::size_t i = 0; i < s.size(); ++i) {
+    if (kPlain.find(s[i]) != std::string_view::npos) vowels.push_back(i);
   }
-  return out;
+  if (vowels.empty()) return s;
+  const auto at = vowels.at(rng() % vowels.size());
+  return s.substr(0, at) + std::string(kAccented.at(kPlain.find(s[at]))) + s.substr(at + 1);
 }
 
 std::string body_for(const std::string& prompt, bool stream) {
@@ -100,7 +108,7 @@ Task<bool> one_request(beast::tcp_stream& s, beast::flat_buffer& buf, const Opti
   co_return res.keep_alive();
 }
 
-// cycle / case / once / mix: closed loop until the deadline (or until `once` runs out).
+// cycle / variant / once / mix: closed loop until the deadline (or until `once` runs out).
 Task<void> worker(int w, const Options& o, Clock::time_point deadline, std::atomic<std::size_t>& once_next,
                   std::vector<Sample>& samples) {
   auto ex = co_await net::this_coro::executor;
@@ -121,14 +129,14 @@ Task<void> worker(int w, const Options& o, Clock::time_point deadline, std::atom
       if (Clock::now() >= deadline) break;
       if (o.mode == "cycle") {
         prompt = o.prompts[(static_cast<std::size_t>(w) + k * static_cast<std::size_t>(o.concurrency)) % o.prompts.size()];
-      } else if (o.mode == "case") {
-        prompt = random_case(o.prompts[rng() % o.prompts.size()], rng);
+      } else if (o.mode == "variant") {
+        prompt = accent_variant(o.prompts[rng() % o.prompts.size()], rng);
       } else {  // mix
         const double r = u(rng);
         if (r < o.mix_exact || o.new_prompts.empty()) {
           prompt = o.prompts[rng() % o.prompts.size()];
-        } else if (r < o.mix_exact + o.mix_case) {
-          prompt = random_case(o.prompts[rng() % o.prompts.size()], rng);
+        } else if (r < o.mix_exact + o.mix_variant) {
+          prompt = accent_variant(o.prompts[rng() % o.prompts.size()], rng);
         } else {
           prompt = o.new_prompts[new_next % o.new_prompts.size()];
           new_next += static_cast<std::size_t>(o.concurrency);
@@ -238,7 +246,7 @@ int main(int argc, char** argv) {
     else if (a == "--out") out_path = next();
     else if (a == "--mix") {
       auto v = next();
-      std::sscanf(v.c_str(), "%lf,%lf", &o.mix_exact, &o.mix_case);
+      std::sscanf(v.c_str(), "%lf,%lf", &o.mix_exact, &o.mix_variant);
     }
   }
   if (o.prompts.empty() || o.key.empty()) {
