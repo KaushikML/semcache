@@ -1423,9 +1423,12 @@ treats as "the same question" is broader than it looks for templated text.
   against the real binaries; `docker.toml` with env overrides (MISS → HIT, prompt not logged,
   exit 0 on SIGTERM, missing-key error); TLS with the system CA store; the compose file parses
   (`docker compose config`); configs parse in unit tests.
-- **Not verified here:** building the image and running `scripts/docker-smoke.sh`. Docker Desktop
-  was installed but not running and not integrated with this WSL distro. CI's `docker` job runs
-  both on the next push.
+- With Docker (after enabling WSL integration): `scripts/docker-smoke.sh` passes every check. The
+  image is 343 MB. The first build took ~9.5 min for dependencies and ~5 min to compile semcache
+  on the dev laptop; later builds reuse the dependency layer and vcpkg's binary cache.
+- Two bugs that only the real image build found: vcpkg's `vcpkg-tool-meson` needs `python3` in
+  the build stage, and the configure step reruns vcpkg, which needs the binary-cache directory
+  (now mounted in that step too).
 
 ---
 

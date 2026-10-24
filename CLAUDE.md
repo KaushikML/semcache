@@ -95,6 +95,6 @@ Source of truth for design: `docs/design.md`. Decisions: `docs/adr/`.
   two-stage `Dockerfile` (pinned, JOBS=4, non-root, model baked in, bash `/dev/tcp` healthcheck),
   `docker-compose.yml` (demo + mock, read-only, cap_drop), `config/docker*.toml`,
   `scripts/docker-smoke.sh` + CI `docker` job, `docs/deploy.md`, `README.md`, memory eval
-  (`bench/results/phase9`: 167 MiB idle, ~8 KB RSS per 2 KB-answer entry). Docker is NOT running
-  on the dev box (Docker Desktop installed, no WSL integration): image build + smoke test not run locally.
+  (`bench/results/phase9`: 167 MiB idle, ~8 KB RSS per 2 KB-answer entry). `scripts/docker-smoke.sh`
+  passes locally (Docker Desktop with WSL integration; image 343 MB).
 - Python tooling: `python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt`.

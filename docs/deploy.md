@@ -17,7 +17,7 @@ docker build --build-arg JOBS=8 -t semcache:local .   # more compile jobs if you
   revision (SHA-256 checked by `scripts/fetch-model.sh`). Dependencies are a separate layer, so
   source edits do not rebuild them. The first build compiles Boost, OpenSSL and the rest from
   source and takes a while; `JOBS` (default 4) caps parallel compile jobs to bound memory use.
-- **Runtime stage** (Ubuntu 24.04 + `ca-certificates`), layout:
+- **Runtime stage** (Ubuntu 24.04 + `ca-certificates`; the image is 343 MB), layout:
 
   | Path | What |
   |---|---|
