@@ -6,6 +6,7 @@
 #include <cstdio>
 
 #include "http/beast_response_writer.hpp"
+#include "web/assets.hpp"
 #include "http/errors.hpp"
 #include "log/log.hpp"
 
@@ -62,6 +63,10 @@ ProxyServer::ProxyServer(net::io_context& ioc, const Config& cfg, Upstream& upst
                 [this](beast::tcp_stream s, tcp::endpoint r) { return session(std::move(s), r); }) {
   metrics_.embedder_ready.set(cache_.embedder != nullptr ? 1 : 0);
   if (!cfg.admin_key.empty()) admin_key_digest_ = sha256(cfg.admin_key.reveal());
+  if (cfg.mode == Mode::demo) {
+    ip_limiter_ = std::make_unique<RateLimiter>(cfg.demo.per_ip_rps, cfg.demo.per_ip_burst,
+                                                [] { return RateLimiter::Clock::now(); }, cfg.demo.max_tracked_ips);
+  }
 }
 
 Task<void> ProxyServer::session(beast::tcp_stream stream, tcp::endpoint remote) {
@@ -110,6 +115,12 @@ Task<bool> ProxyServer::route(beast::tcp_stream& stream, Request& req, const tcp
                     cache_.embedder != nullptr ? R"({"status":"ready","degraded":[]})"
                                          : R"({"status":"degraded","degraded":["embedder"]})",
                     kNoHeaders);
+  } else if (path == "/dashboard" || path.starts_with("/dashboard/")) {
+    co_return co_await serve_dashboard(w, req, path);
+  } else if (path == "/stats/stream" && req.method() == http::verb::get) {
+    co_return co_await stream_stats(w, req);
+  } else if (path == "/demo/reset" && cfg_.mode == Mode::demo && req.method() == http::verb::post) {
+    co_return co_await handle_demo_reset(w, req, remote);
   } else if (path == "/admin/purge" && admin_key_digest_) {
     if (req.method() != http::verb::post) {
       const HeaderList allow = {{"Allow", "POST"}};
@@ -147,6 +158,13 @@ Task<bool> ProxyServer::handle_chat(beast::tcp_stream& stream, Request& req, con
     co_return co_await reject(w, req, request_id, remote, 401, "invalid or missing API key", "invalid_api_key", kNoHeaders);
   }
 
+  if (double retry = 0; !ip_allowed(remote, retry)) {
+    metrics_.rate_limited.inc();
+    auto retry_s = std::to_string(static_cast<long long>(std::ceil(retry)));
+    const HeaderList headers = {{"Retry-After", retry_s}};
+    co_return co_await reject(w, req, request_id, remote, 429, "demo rate limit exceeded for this address",
+                              "rate_limit_exceeded", headers);
+  }
   if (auto d = tenant_limiter_.acquire(tenant->id); !d.allowed) {
     metrics_.rate_limited.inc();
     auto retry = std::to_string(static_cast<long long>(std::ceil(d.retry_after_s)));
@@ -163,7 +181,9 @@ Task<bool> ProxyServer::handle_chat(beast::tcp_stream& stream, Request& req, con
 
   const auto body_bytes = req.body().size();
   const auto bypass = req["X-Semcache-Bypass"];
-  ChatOptions opts{.bypass = bypass == "1" || bypass == "true", .tags = std::string(req["X-Semcache-Tags"])};
+  ChatOptions opts{.bypass = bypass == "1" || bypass == "true",
+                   .tags = std::string(req["X-Semcache-Tags"]),
+                   .max_prompt_chars = cfg_.mode == Mode::demo ? cfg_.demo.max_prompt_chars : 0};
   auto outcome = co_await pipeline_.handle_chat(*tenant, std::move(req.body()), std::move(opts), w, received);
   metrics_.requests[static_cast<std::size_t>(outcome.result)]->inc();
   metrics_.request_seconds.observe(ms_since(received) / 1000.0);
@@ -177,6 +197,10 @@ Task<bool> ProxyServer::handle_chat(beast::tcp_stream& stream, Request& req, con
                             {"upstream_ms", outcome.upstream_ms},
                             {"upstream_error", to_string(outcome.upstream_error)},
                             {"bytes_in", body_bytes}};
+  remember({std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count(),
+            std::string(to_string(outcome.result)), outcome.status, ms_since(received), outcome.similarity,
+            outcome.streamed});
   if (outcome.similarity) fields["similarity"] = *outcome.similarity;
   if (!outcome.bypass_reason.empty()) fields["bypass_reason"] = outcome.bypass_reason;
   if (!outcome.store.empty()) fields["store"] = outcome.store;
@@ -233,21 +257,15 @@ Task<bool> ProxyServer::handle_purge(BeastResponseWriter& w, Request& req) {
     co_return w.healthy() && req.keep_alive();
   }
 
-  // Runs on the writer thread (the only mutator); reply once applied, so later lookups cannot
-  // see purged entries (design §3, consistency).
-  using Done = net::experimental::concurrent_channel<void(boost::system::error_code, std::size_t)>;
-  auto done = std::make_shared<Done>(co_await net::this_coro::executor, 1);
-  const bool queued = cache_.writer != nullptr &&
-                      cache_.writer->submit_purge(filter, [done](std::size_t n) { done->try_send(boost::system::error_code{}, n); });
-  if (!queued) {
+  const auto result = co_await run_purge(filter);
+  if (result.cancelled) co_return false;  // shutting down
+  if (!result.queued) {
     const HeaderList retry = {{"Retry-After", "1"}};
     const auto msg = openai_error_json("cache writer unavailable or busy, retry later", "server_error");
     co_await w.send(503, kJson, msg, retry);
     co_return w.healthy() && req.keep_alive();
   }
-  auto received = co_await done->async_receive(use_nothrow);
-  if (std::get<0>(received)) co_return false;  // shutting down
-  const auto purged = std::get<1>(received);
+  const auto purged = result.purged;
   log::info("purge", {{"purged", purged},
                       {"tenant", filter.tenant.value_or("")},
                       {"tag", filter.tag.value_or("")},
@@ -257,6 +275,105 @@ Task<bool> ProxyServer::handle_purge(BeastResponseWriter& w, Request& req) {
   const auto reply_body = reply.dump();
   co_await w.send(200, kJson, reply_body, kNoHeaders);
   co_return w.healthy() && req.keep_alive();
+}
+
+Task<ProxyServer::PurgeResult> ProxyServer::run_purge(PurgeFilter filter) {
+  PurgeResult r;
+  // Runs on the writer thread (the only mutator); reply once applied, so later lookups cannot
+  // see purged entries (design §3, consistency).
+  using Done = net::experimental::concurrent_channel<void(boost::system::error_code, std::size_t)>;
+  auto done = std::make_shared<Done>(co_await net::this_coro::executor, 1);
+  r.queued = cache_.writer != nullptr &&
+             cache_.writer->submit_purge(std::move(filter),
+                                         [done](std::size_t n) { done->try_send(boost::system::error_code{}, n); });
+  if (!r.queued) co_return r;
+  auto received = co_await done->async_receive(use_nothrow);
+  r.cancelled = static_cast<bool>(std::get<0>(received));
+  r.purged = std::get<1>(received);
+  co_return r;
+}
+
+bool ProxyServer::ip_allowed(const tcp::endpoint& remote, double& retry_after_s) {
+  if (!ip_limiter_) return true;
+  auto d = ip_limiter_->acquire(remote.address().to_string());
+  retry_after_s = d.retry_after_s;
+  return d.allowed;
+}
+
+Task<bool> ProxyServer::handle_demo_reset(BeastResponseWriter& w, Request& req, const tcp::endpoint& remote) {
+  if (double retry = 0; !ip_allowed(remote, retry)) {
+    const HeaderList headers = {{"Retry-After", std::to_string(static_cast<long long>(std::ceil(retry)))}};
+    const auto msg = openai_error_json("demo rate limit exceeded for this address", "invalid_request_error",
+                                       "rate_limit_exceeded");
+    co_await w.send(429, kJson, msg, headers);
+    co_return w.healthy() && req.keep_alive();
+  }
+  PurgeFilter filter;
+  filter.tenant = "demo";
+  const auto result = co_await run_purge(filter);
+  if (result.cancelled) co_return false;
+  nlohmann::json reply;
+  reply["purged"] = result.purged;
+  const auto body = reply.dump();
+  const unsigned status = result.queued ? 200 : 503;
+  co_await w.send(status, kJson, body, kNoHeaders);
+  co_return w.healthy() && req.keep_alive();
+}
+
+Task<bool> ProxyServer::serve_dashboard(BeastResponseWriter& w, Request& req, std::string_view path) {
+  // /dashboard and /dashboard/ are the page; /dashboard/<file> its assets (absolute URLs in HTML).
+  std::string_view name = path.size() <= std::string_view("/dashboard/").size() ? "index.html"
+                                                                                : path.substr(std::string_view("/dashboard/").size());
+  auto file = req.method() == http::verb::get ? web::load(name, cfg_.server.dashboard_dir) : std::nullopt;
+  if (!file) {
+    const auto msg = openai_error_json("not found", "invalid_request_error");
+    co_await w.send(404, kJson, msg, kNoHeaders);
+    co_return w.healthy() && req.keep_alive();
+  }
+  // Same-origin only: no third-party scripts, styles, fonts or frames (ADR-010).
+  const HeaderList headers = {
+      {"Content-Security-Policy",
+       "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
+       "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"},
+      {"X-Content-Type-Options", "nosniff"},
+      {"Referrer-Policy", "no-referrer"},
+      {"Cache-Control", "no-cache"}};
+  const auto type = web::content_type(name);
+  co_await w.send(200, type, std::move(*file), headers);
+  co_return w.healthy() && req.keep_alive();
+}
+
+Task<bool> ProxyServer::stream_stats(BeastResponseWriter& w, Request& req) {
+  if (stream_clients_.fetch_add(1) >= cfg_.stats.max_stream_clients) {
+    stream_clients_.fetch_sub(1);
+    const HeaderList retry = {{"Retry-After", "5"}};
+    const auto msg = openai_error_json("too many /stats/stream clients", "server_error");
+    co_await w.send(503, kJson, msg, retry);
+    co_return w.healthy() && req.keep_alive();
+  }
+  struct Release {
+    std::atomic<std::size_t>& n;
+    ~Release() { n.fetch_sub(1); }
+  } release{stream_clients_};
+
+  const HeaderList headers = {{"Cache-Control", "no-cache"}};
+  if (!co_await w.begin_stream(200, "text/event-stream", headers)) co_return false;
+  net::steady_timer timer(co_await net::this_coro::executor);
+  for (;;) {
+    const auto event = "data: " + stats_json() + "\n\n";
+    if (!co_await w.write_chunk(event)) co_return false;  // client gone
+    timer.expires_after(cfg_.stats.stream_interval);
+    auto [ec] = co_await timer.async_wait(use_nothrow);
+    if (ec) break;  // shutting down: the listener cancels sessions
+  }
+  co_await w.end_stream();
+  co_return false;  // a finished event stream closes the connection
+}
+
+void ProxyServer::remember(Recent r) {
+  std::lock_guard lock(recent_mu_);
+  recent_.push_front(std::move(r));
+  while (recent_.size() > cfg_.stats.recent_requests) recent_.pop_back();
 }
 
 std::string ProxyServer::stats_json() const {
@@ -276,6 +393,23 @@ std::string ProxyServer::stats_json() const {
   j["tokens_saved"] = metrics_.tokens_saved.value();
   j["inflight"] = metrics_.inflight.value();
   j["embedder_ready"] = cache_.embedder != nullptr;
+  j["mode"] = cfg_.mode == Mode::demo ? "demo" : "live";
+  j["uptime_s"] = std::chrono::duration<double>(std::chrono::steady_clock::now() - started_).count();
+  if (cfg_.mode == Mode::demo) {
+    // Public by design in demo mode (design §10), so the dashboard can call the API.
+    j["demo"] = {{"public_key", cfg_.demo.public_key}, {"max_prompt_chars", cfg_.demo.max_prompt_chars},
+                 {"per_ip_rps", cfg_.demo.per_ip_rps}, {"per_ip_burst", cfg_.demo.per_ip_burst}};
+  }
+  {
+    std::lock_guard lock(recent_mu_);
+    j["recent"] = nlohmann::json::array();
+    for (const auto& r : recent_) {
+      nlohmann::json e = {{"at_ms", r.at_ms}, {"result", r.result}, {"status", r.status},
+                          {"latency_ms", r.latency_ms}, {"streamed", r.streamed}};
+      if (r.similarity) e["similarity"] = *r.similarity;
+      j["recent"].push_back(std::move(e));
+    }
+  }
   if (cache_.store != nullptr) {
     auto st = cache_.store->stats();
     j["cache"] = {{"entries", st.entries},

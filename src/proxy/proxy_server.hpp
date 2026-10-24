@@ -1,6 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <deque>
+#include <memory>
+#include <mutex>
 #include <optional>
 
 #include "auth/tenants.hpp"
@@ -38,6 +41,32 @@ class ProxyServer {
   Task<bool> handle_chat(beast::tcp_stream& stream, Request& req, const tcp::endpoint& remote);
   // POST /admin/purge {"tenant"?, "tag"?, "context"? (64 hex)} with the admin key (design §10).
   Task<bool> handle_purge(BeastResponseWriter& w, Request& req);
+  // POST /demo/reset (demo mode): purges the public demo tenant's entries.
+  Task<bool> handle_demo_reset(BeastResponseWriter& w, Request& req, const tcp::endpoint& remote);
+  // GET /dashboard[/<file>]: the static dashboard, with a strict Content-Security-Policy.
+  Task<bool> serve_dashboard(BeastResponseWriter& w, Request& req, std::string_view path);
+  // GET /stats/stream: /stats as server-sent events every stats.stream_interval_ms.
+  Task<bool> stream_stats(BeastResponseWriter& w, Request& req);
+
+  struct PurgeResult {
+    bool queued = false;     // false: no writer, or its queue is full
+    bool cancelled = false;  // shutting down
+    std::size_t purged = 0;
+  };
+  // Runs a purge on the writer thread and waits until it has been applied (design §3).
+  Task<PurgeResult> run_purge(PurgeFilter filter);
+  // Demo mode: per-IP token bucket; false => answered 429.
+  [[nodiscard]] bool ip_allowed(const tcp::endpoint& remote, double& retry_after_s);
+
+  struct Recent {  // one request in the /stats ring: never prompt or response text
+    std::int64_t at_ms = 0;
+    std::string result;
+    unsigned status = 0;
+    double latency_ms = 0;
+    std::optional<float> similarity;
+    bool streamed = false;
+  };
+  void remember(Recent r);
   [[nodiscard]] std::string stats_json() const;
   Task<bool> reject(BeastResponseWriter& w, const Request& req, std::uint64_t request_id,
                     const tcp::endpoint& remote, unsigned status, std::string_view message,
@@ -50,6 +79,11 @@ class ProxyServer {
   TenantDirectory tenants_;
   std::optional<Sha256Digest> admin_key_digest_;  // unset => /admin/* disabled (404)
   RateLimiter tenant_limiter_;
+  std::unique_ptr<RateLimiter> ip_limiter_;  // demo mode only
+  mutable std::mutex recent_mu_;
+  std::deque<Recent> recent_;
+  std::atomic<std::size_t> stream_clients_{0};
+  std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
   RequestPipeline pipeline_;
   std::atomic<int> inflight_{0};
   std::atomic<std::uint64_t> next_request_id_{1};

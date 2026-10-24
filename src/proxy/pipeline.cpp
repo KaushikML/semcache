@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdio>
 #include <random>
 
@@ -115,6 +116,23 @@ bool valid_chat_request(const nlohmann::json& j) {
   return j.is_object() && j.contains("messages") && j["messages"].is_array() && !j["messages"].empty();
 }
 
+// Code points in the final message's text (strings and text parts), for the demo prompt cap.
+std::size_t prompt_chars(const nlohmann::json& req) {
+  const auto& content = req["messages"].back().is_object() ? req["messages"].back().value("content", nlohmann::json())
+                                                           : nlohmann::json();
+  std::string text;
+  if (content.is_string()) {
+    text = content.get<std::string>();
+  } else if (content.is_array()) {
+    for (const auto& part : content) {
+      if (part.is_object() && part.contains("text") && part["text"].is_string()) text += part["text"].get<std::string>();
+    }
+  }
+  return static_cast<std::size_t>(std::count_if(text.begin(), text.end(), [](char c) {
+    return (static_cast<unsigned char>(c) & 0xC0) != 0x80;  // count UTF-8 lead bytes only
+  }));
+}
+
 bool wants_stream(const nlohmann::json& req) {
   auto it = req.find("stream");
   return it != req.end() && it->is_boolean() && it->get<bool>();
@@ -218,6 +236,16 @@ Task<PipelineOutcome> RequestPipeline::handle_chat(Tenant tenant, std::string bo
                       openai_error_json("request body must be a JSON object with a non-empty 'messages' array",
                                         "invalid_request_error"),
                       semcache_headers(CacheResult::bypass, received, std::nullopt));
+    co_return outcome;
+  }
+
+  if (opts.max_prompt_chars > 0 && prompt_chars(request) > opts.max_prompt_chars) {
+    metrics_.bad_requests.inc();
+    outcome.status = 400;
+    const auto msg = openai_error_json("prompt is longer than this demo allows (demo.max_prompt_chars)",
+                                       "invalid_request_error", "prompt_too_long");
+    const auto headers = semcache_headers(CacheResult::bypass, received, std::nullopt);
+    co_await out.send(400, kJson, msg, headers);
     co_return outcome;
   }
 

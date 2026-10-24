@@ -37,6 +37,7 @@ struct CacheServices {
 struct ChatOptions {
   bool bypass = false;   // X-Semcache-Bypass
   std::string tags;      // X-Semcache-Tags, raw
+  std::size_t max_prompt_chars = 0;  // demo mode: longer final user messages get 400; 0 = no limit
 };
 
 struct PipelineOutcome {

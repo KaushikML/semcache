@@ -46,6 +46,7 @@ add_executable(semcache_integration_tests
   integration/herd_test.cpp
   integration/restart_purge_test.cpp
   integration/semantic_model_test.cpp
+  integration/dashboard_test.cpp
 )
 target_include_directories(semcache_integration_tests PRIVATE .)
 target_compile_definitions(semcache_integration_tests PRIVATE
