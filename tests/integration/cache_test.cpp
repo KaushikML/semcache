@@ -174,6 +174,20 @@ TEST(Cache, WithoutEmbedderExactMatchStillWorks) {
   EXPECT_EQ(env.chat("hello there").header("x-semcache"), "MISS");
 }
 
+// ADR-013: without any embedder, only the exact path can hit, so these HITs prove the folding.
+TEST(Cache, CaseSpacingAndFinalPunctuationVariantsAreExactHits) {
+  TestEnv env(fast_mock(), {}, WithEmbedder::none);
+  auto first = env.chat("tell me the privacy policy");
+  EXPECT_EQ(first.header("x-semcache"), "MISS");
+  for (const char* variant : {"Tell me the privacy policy.", "TELL ME THE PRIVACY POLICY?", "  tell me  the privacy policy "}) {
+    auto r = env.chat(variant);
+    EXPECT_EQ(r.header("x-semcache"), "HIT") << variant;
+    EXPECT_EQ(content_of(r), content_of(first)) << variant;
+  }
+  EXPECT_EQ(env.chat("tell privacy policy").header("x-semcache"), "MISS") << "different words are not folded";
+  EXPECT_EQ(env.mock().chat_requests(), 2u);
+}
+
 TEST(Cache, FullEmbedQueueFailsOpen) {
   TestEnv env(fast_mock(), [](Config& c) {
     c.embedder.threads = 1;

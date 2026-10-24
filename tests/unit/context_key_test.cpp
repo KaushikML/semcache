@@ -150,6 +150,48 @@ TEST(ContextKey, EmbedTextIsNfcAndTrimmed) {
   EXPECT_EQ(classify(a).request->prompt_hash, classify(b).request->prompt_hash);
 }
 
+PromptHash prompt_hash_of(const std::string& text) {
+  auto b = base();
+  b["messages"].back()["content"] = text;
+  auto c = classify(b);
+  EXPECT_TRUE(c.request.has_value()) << text;
+  return c.request ? c.request->prompt_hash : PromptHash{};
+}
+
+// ADR-013: the exact key ignores case, spacing and sentence-final punctuation.
+TEST(ContextKey, ExactKeyFoldsCaseSpacingAndFinalPunctuation) {
+  const auto h = prompt_hash_of("tell me the privacy policy");
+  for (const char* same : {"Tell me the privacy policy.", "TELL ME THE PRIVACY POLICY?", "tell  me\tthe privacy\npolicy",
+                           "  Tell me the privacy policy!!  ", "tell me the privacy policy ?", "tell me the privacy policy…",
+                           "tell me the privacy policy\xEF\xBC\x9F" /* full-width ？ */}) {
+    EXPECT_EQ(prompt_hash_of(same), h) << same;
+  }
+  EXPECT_EQ(prompt_hash_of("STRASSE"), prompt_hash_of("straße")) << "Unicode case folding, not ASCII tolower";
+  EXPECT_EQ(prompt_hash_of("Ünïcödé"), prompt_hash_of("ünïcödé"));
+}
+
+TEST(ContextKey, ExactKeyKeepsEverythingElseSignificant) {
+  const std::vector<std::pair<std::string, std::string>> different = {
+      {"tell me the privacy policy", "tell privacy policy"},          // words
+      {"What does the warranty cover?", "What does the warranty not cover?"},
+      {"upgrade to version 1.2", "upgrade to version 12"},            // internal punctuation
+      {"what is C++?", "what is C?"},
+      {"what is 5!", "what is 5"},                                    // a final mark after a digit stays
+      {"café", "cafe"},                                               // accents
+      {"is it ok?", "is it ok ?!x"},
+      {"don't", "dont"},
+  };
+  for (const auto& [a, b] : different) EXPECT_NE(prompt_hash_of(a), prompt_hash_of(b)) << a << " | " << b;
+}
+
+TEST(ContextKey, ExactKeyFoldingDoesNotChangeTheModelInput) {
+  auto b = base();
+  b["messages"].back()["content"] = "  Tell me the privacy policy?\n";
+  auto c = classify(b);
+  ASSERT_TRUE(c.request);
+  EXPECT_EQ(c.request->embed_text, "Tell me the privacy policy?");
+}
+
 TEST(ContextKey, TextPartsAreCacheable) {
   auto b = base();
   b["messages"].back()["content"] = json::array({{{"type", "text"}, {"text", "What is your refund policy?"}}});

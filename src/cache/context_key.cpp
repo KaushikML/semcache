@@ -107,6 +107,58 @@ std::string nfc_trimmed(std::string_view s) {
   return out.substr(b, e - b + 1);
 }
 
+// The text behind the exact key (ADR-013): NFC + Unicode case folding, whitespace runs collapsed to
+// one space, and a sentence-final run of . ? ! (… 。 ？ ！) dropped when it follows a letter. Nothing
+// else is folded: internal punctuation ("1.2" vs "12", "C++"), a final mark after a digit ("5!"),
+// accents and every word stay significant. Case adds no risk the model does not already take: it is
+// uncased, so case variants embed identically. The model's own input (embed_text) is not folded.
+std::string exact_key_text(std::string_view s) {
+  utf8proc_uint8_t* folded = nullptr;
+  const auto n = utf8proc_map(reinterpret_cast<const utf8proc_uint8_t*>(s.data()), static_cast<utf8proc_ssize_t>(s.size()),
+                              &folded, static_cast<utf8proc_option_t>(UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD));
+  std::unique_ptr<utf8proc_uint8_t, decltype(&std::free)> owned(folded, &std::free);
+  if (n < 0) return nfc_trimmed(s);  // invalid UTF-8: as before, no folding
+
+  auto is_space = [](utf8proc_int32_t c) {
+    const auto cat = utf8proc_category(c);
+    return c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v' || cat == UTF8PROC_CATEGORY_ZS ||
+           cat == UTF8PROC_CATEGORY_ZL || cat == UTF8PROC_CATEGORY_ZP;
+  };
+  std::vector<utf8proc_int32_t> cps;
+  bool pending_space = false;
+  for (utf8proc_ssize_t i = 0; i < n;) {
+    utf8proc_int32_t c = 0;
+    i += utf8proc_iterate(folded + i, n - i, &c);
+    if (is_space(c)) {
+      pending_space = !cps.empty();
+      continue;
+    }
+    if (pending_space) cps.push_back(' ');
+    pending_space = false;
+    cps.push_back(c);
+  }
+
+  auto is_final_mark = [](utf8proc_int32_t c) {
+    return c == '.' || c == '?' || c == '!' || c == 0x2026 || c == 0x3002 || c == 0xFF1F || c == 0xFF01;
+  };
+  auto is_letter = [](utf8proc_int32_t c) {
+    const auto cat = utf8proc_category(c);
+    return cat >= UTF8PROC_CATEGORY_LU && cat <= UTF8PROC_CATEGORY_LO;
+  };
+  std::size_t end = cps.size();
+  while (end > 0 && is_final_mark(cps[end - 1])) --end;
+  if (end < cps.size()) {
+    std::size_t before = end;
+    if (before > 0 && cps[before - 1] == ' ') --before;  // "policy ?"
+    if (before > 0 && is_letter(cps[before - 1])) cps.resize(before);
+  }
+
+  std::string out;
+  utf8proc_uint8_t buf[4];
+  for (auto c : cps) out.append(reinterpret_cast<const char*>(buf), static_cast<std::size_t>(utf8proc_encode_char(c, buf)));
+  return out;
+}
+
 }  // namespace
 
 std::string_view to_string(NotCacheable r) {
@@ -205,7 +257,7 @@ Classification classify_request(const nlohmann::json& body, std::string_view ten
   CacheableRequest r;
   r.context = sha256(enc);
   r.embed_text = nfc_trimmed(*text);
-  r.prompt_hash = sha256(r.embed_text);
+  r.prompt_hash = sha256(exact_key_text(*text));
   return Classification{std::move(r), {}};
 }
 
