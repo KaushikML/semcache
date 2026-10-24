@@ -5,7 +5,7 @@ the C++ techniques used, how a request flows through the code, how concurrency a
 handled, how it is tested, and what was measured. Read it top to bottom once; afterwards use the
 file map (§4) as an index.
 
-Status at time of writing: Phases 0–6 done; Phase 7 (evaluation) implemented and awaiting review.
+Status at time of writing: Phases 0–7 done; Phase 8 (dashboard + demo mode) implemented and awaiting review.
 221 automated tests pass in debug, AddressSanitizer/UBSan and ThreadSanitizer builds.
 
 ---
@@ -27,15 +27,16 @@ Status at time of writing: Phases 0–6 done; Phase 7 (evaluation) implemented a
 13. [Phase 5 — the HNSW index](#13-phase-5--the-hnsw-index)
 14. [Phase 6 — persistence and purge](#14-phase-6--persistence-and-purge)
 15. [Phase 7 — evaluation](#15-phase-7--evaluation)
-16. [Concurrency model as implemented](#16-concurrency-model-as-implemented)
-17. [Failure handling: "fail open"](#17-failure-handling-fail-open)
-18. [Configuration reference](#18-configuration-reference)
-19. [Observability: logs, metrics, endpoints](#19-observability-logs-metrics-endpoints)
-20. [Testing: how we know it works](#20-testing-how-we-know-it-works)
-21. [Measurements so far](#21-measurements-so-far)
-22. [Known weaknesses and what comes next](#22-known-weaknesses-and-what-comes-next)
-23. [How to build, run and test](#23-how-to-build-run-and-test)
-24. [Glossary](#24-glossary)
+16. [Phase 8 — the dashboard and demo mode](#16-phase-8--the-dashboard-and-demo-mode)
+17. [Concurrency model as implemented](#17-concurrency-model-as-implemented)
+18. [Failure handling: "fail open"](#18-failure-handling-fail-open)
+19. [Configuration reference](#19-configuration-reference)
+20. [Observability: logs, metrics, endpoints](#20-observability-logs-metrics-endpoints)
+21. [Testing: how we know it works](#21-testing-how-we-know-it-works)
+22. [Measurements so far](#22-measurements-so-far)
+23. [Known weaknesses and what comes next](#23-known-weaknesses-and-what-comes-next)
+24. [How to build, run and test](#24-how-to-build-run-and-test)
+25. [Glossary](#25-glossary)
 
 ---
 
@@ -163,6 +164,7 @@ cache can only ever remove work, never break a request.
 |---|---|
 | `warnings.cmake` | `semcache_set_warnings(target)`: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wold-style-cast …`, and `-Werror` (warnings fail the build). Disables one GCC false positive about coroutine frames. |
 | `sanitizers.cmake` | If `SEMCACHE_SANITIZE` is set (`address,undefined` or `thread`), adds `-fsanitize=…` to compile and link flags. |
+| `embed_web.cmake` | Script-mode CMake: turns `web/*` into byte arrays in `generated/web_assets.cpp` (dashboard embedded in the binary). |
 | `onnxruntime.cmake` | Downloads the official ONNX Runtime 1.20.1 Linux x64 release tarball, verifies its SHA-256, extracts it to `.cache/onnxruntime`, and creates the imported target `onnxruntime::onnxruntime`. |
 
 ### `scripts/`
@@ -184,7 +186,9 @@ cache can only ever remove work, never break a request.
 | File | What it does |
 |---|---|
 | `design.md` | The source of truth: problem, requirements, non-goals, sizing math, architecture, data flows, concurrency, failure modes, observability, security, multi-node story, config, tests. Measured numbers are recorded next to the estimates. |
-| `adr/000-template.md` … `adr/011-…` | Architecture Decision Records (see §8). |
+| `adr/000-template.md` … `adr/012-…` | Architecture Decision Records (see §8). |
+| `demo-script.md` | Phase 8: how to run and present the dashboard; what demo mode enforces. |
+| `img/dashboard.png` | Screenshot taken by `tools/dashboard_e2e.py`. |
 | `WALKTHROUGH.md` | This file. |
 
 ### `src/` — the product (C++)
@@ -204,7 +208,8 @@ cache can only ever remove work, never break a request.
 | `log/log.{hpp,cpp}` | Log | One JSON object per log line via spdlog (`ts`, `level`, `msg`, fields). |
 | `metrics/metrics.{hpp,cpp}` | Metrics | Lock-free `Counter`, `Gauge`, `Histogram` (atomics) and a registry that renders the Prometheus text format; histogram quantiles for `/stats`. |
 | `auth/tenants.{hpp,cpp}` | Http/auth | Maps `Bearer <key>` → tenant by looking up SHA-256(key); raw keys are never stored. |
-| `limits/rate_limiter.{hpp,cpp}` | Http/limits | Token-bucket rate limiter keyed by tenant, sharded over 16 mutexes. |
+| `limits/rate_limiter.{hpp,cpp}` | Http/limits | Token-bucket rate limiter keyed by tenant (or client IP in demo mode), sharded over 16 mutexes, optionally bounded in keys. |
+| `web/assets.{hpp,cpp}` | Http | Dashboard files: embedded lookup, safe `load(name, dir)`, content types. |
 | `upstream/upstream.hpp` | Upstream | Interface: `send(request, sink)`; the response is delivered piece by piece to an `UpstreamSink`. Error kinds: connect, timeout, protocol, reset, aborted. |
 | `upstream/http_upstream.{hpp,cpp}` | Upstream | Real HTTP/1.1 client (plain or TLS) with connect / first-byte / idle / total timeouts and a header allow-list. |
 | `embed/embedder.hpp` | Embedder | Interface `embed(texts) → vectors`; `Embedding` = `std::array<float, 384>`; `EmbedError` (`too_long`, `inference`). |
@@ -227,8 +232,14 @@ cache can only ever remove work, never break a request.
 | `persist/persistence.{hpp,cpp}` | Persistence | Recovery, WAL buffering and fsync, segment rotation, snapshot thread, disk-error fallback. |
 | `index/hnsw_index.{hpp,cpp}` | VectorIndex | Approximate search over a layered proximity graph (HNSW); tombstone deletes. |
 | `proxy/proxy_metrics.hpp` | Metrics | Every metric the proxy exports, registered once. `CacheResult` enum (HIT/MISS/COALESCED/BYPASS). |
-| `proxy/proxy_server.{hpp,cpp}` | Http | Connection loop, routing, auth, rate limit, in-flight limit, `/healthz`, `/readyz`, `/stats`, `/metrics`, request log line. |
+| `proxy/proxy_server.{hpp,cpp}` | Http | Connection loop, routing, auth, rate limits, in-flight limit, `/healthz`, `/readyz`, `/stats`, `/stats/stream`, `/metrics`, `/dashboard`, `/admin/purge`, `/demo/reset`, recent-requests ring, request log line. |
 | `proxy/pipeline.{hpp,cpp}` | RequestPipeline | The only place that composes all modules for one chat request: classify → lookup → HIT / MISS / BYPASS. |
+
+### `web/` — the dashboard (static, embedded at build time)
+
+| File | What it does |
+|---|---|
+| `index.html`, `app.css`, `app.js` | The dashboard page (§16). Vanilla JS, no dependencies, same-origin only. |
 
 ### `mock/` — the fake LLM API
 
@@ -248,6 +259,7 @@ cache can only ever remove work, never break a request.
 | `analyze_threshold.py` | Phase 7: hit vs false-hit curves (QQP pairs, FAQ cache replay) and plots. |
 | `run_load_eval.py` | Phase 7: starts the real binaries per scenario and drives the C++ load generator. |
 | `cost_model.py` | Phase 7: savings vs compute, from measured rates + labelled assumptions. |
+| `dashboard_e2e.py` | Phase 8: drives the real binaries and the dashboard in headless Chromium (Playwright); optional screenshot. |
 | `gen_bert_tables.py` | Runs every Unicode code point through HuggingFace's normalizer and pre-tokenizer; writes `src/embed/bert_tables.inc` and `tests/data/normalizer_blocks.txt`; `--diff` mode for debugging mismatches. |
 
 ### `bench/` — benchmarks
@@ -274,7 +286,7 @@ cache can only ever remove work, never break a request.
 | `support/recording_writer.hpp` | A `ResponseWriter` that just records calls, for coalescer tests without sockets. |
 | `support/model_paths.hpp` | Paths to the real model and golden files. |
 | `sanitizers/lsan.supp`, `tsan.supp` | Narrow suppressions for noise from inside the prebuilt ONNX Runtime library. |
-| `unit/*.cpp`, `integration/*.cpp` | The tests (§20). |
+| `unit/*.cpp`, `integration/*.cpp` | The tests (§21). |
 | `data/` | Golden files generated by the Python tools. |
 
 ---
@@ -1227,7 +1239,103 @@ CPU spent and wrong answers per month for several traffic mixes (`cost_model.md`
 
 ---
 
-## 16. Concurrency model as implemented
+## 16. Phase 8 — the dashboard and demo mode
+
+Goal: a page that explains semcache to a non-technical viewer in seconds, shows live numbers, lets
+them watch a HIT, a reworded HIT, an honest false hit and a coalesced rush happen, and is safe to
+leave open on the internet in demo mode. Talk track: `docs/demo-script.md`.
+
+### 16.1 The page (`web/`)
+
+Three files, no framework, no build step, no CDN (ADR-010):
+
+| File | What it does |
+|---|---|
+| `web/index.html` | Layout: header pills (mode, embedder, threshold), live tiles, four scenario cards, try-it box, hit-rate sparkline, recent-requests table, reset button. No inline script or style (the CSP forbids them). |
+| `web/app.css` | System fonts, CSS variables, light and dark themes (`prefers-color-scheme`), responsive grid. |
+| `web/app.js` | Everything dynamic. Builds DOM only with `textContent` (never `innerHTML`), so no text can inject HTML. |
+
+What `app.js` does:
+- **Live numbers:** `GET /stats` once, then `EventSource('/stats/stream')`; every snapshot redraws
+  the tiles, the recent table and the sparkline (cumulative hit rate, last 120 snapshots, drawn as
+  an SVG `<polyline>`). "Typical answer time" is the median latency of recent HITs vs MISSes.
+- **Calling the API:** `fetch('/v1/chat/completions')` with the demo tenant's public key (read
+  from `/stats` in demo mode; in live mode the user types a key, kept in memory only). Results come
+  from the `X-Semcache*` headers. Streaming answers are read from `res.body` and parsed as SSE.
+- **Scenarios:** each run puts a fresh system message in the conversation
+  (`… dashboard <name> run <session>-<n>`), which changes the context key, so every run starts
+  cold and runs never interfere. Repeat (MISS → HIT), Reword ("How do I…" → "How can I…",
+  similarity 0.996), Trap ("cover" vs "not cover", 0.974 → a wrong HIT, labelled in red), Rush
+  (N identical requests at once with `Promise.all`).
+- **Rush, honestly:** browsers open at most 6 connections per site, so of 16 requests about 5 join
+  the in-flight call (COALESCED) and the rest arrive after it was stored (HIT). The card text
+  and the verdict say exactly that; the pure 50-at-once case is the Phase 7 load test.
+
+### 16.2 Serving it (`src/web/`, `cmake/embed_web.cmake`)
+
+- At build time, `cmake/embed_web.cmake` (CMake script mode, no `xxd`) turns each `web/*` file
+  into a byte array in `build/<preset>/generated/web_assets.cpp`, so the binary is the only
+  artefact. `web::embedded_file(name)` looks names up.
+- `web::load(name, dir)` refuses anything that is not a bare file name (no `/`, `\`, leading `.`)
+  and reads from `server.dashboard_dir` instead when that is set (edit-and-reload during
+  development).
+- `/dashboard`, `/dashboard/` → `index.html`; `/dashboard/<file>` → that file; anything else 404.
+  Headers: a same-origin-only CSP (`default-src 'self'; script-src 'self'; … frame-ancestors
+  'none'`), `nosniff`, `no-referrer`, `no-cache`.
+
+### 16.3 `/stats` additions and `/stats/stream`
+
+- `/stats` gained `mode`, `uptime_s`, a `recent` array (newest first, bounded by
+  `stats.recent_requests`: time, result, status, latency, similarity, streamed; **no prompt
+  text, no tenant**) and, in demo mode only, a `demo` object with the public key and limits.
+- The ring is a `std::deque` under its own mutex, filled at the end of every chat request. It is a
+  leaf lock: nothing else is taken while it is held.
+- `/stats/stream` is a chunked `text/event-stream`: one `data: <stats json>` event every
+  `stats.stream_interval_ms`, from a coroutine with a `steady_timer`. An atomic counter caps
+  connections (`stats.max_stream_clients`, beyond: 503 + `Retry-After`). A client that leaves is
+  noticed at the next write; on shutdown the listener cancels the timer.
+
+### 16.4 Demo mode safety
+
+All enforced in config validation (`finalize_config`) and the proxy, not in the page:
+
+| Rule | How |
+|---|---|
+| Never a paid upstream | demo mode refuses to start unless `host:port` is in `demo.allowed_upstreams` and `SEMCACHE_UPSTREAM_API_KEY` is unset |
+| Public key, own tenant | tenant `demo` is added for `demo.public_key`; other tenants' entries are untouched |
+| Per-address limit | a second `RateLimiter` keyed by client IP on chat and `/demo/reset` → 429 + `Retry-After` |
+| Bounded limiter | `max_tracked_ips`: a full shard first drops buckets idle ≥ burst/rate (they are full again, so nothing is lost), then the least recently used |
+| Prompt cap | `demo.max_prompt_chars` counts Unicode code points of the last message → 400 `prompt_too_long` before the cache or upstream |
+| Memory | `cache.max_bytes` is capped at `demo.max_bytes` |
+| Reset | `POST /demo/reset` purges tenant `demo` through the same writer path as `/admin/purge` (factored into `run_purge`) |
+
+### 16.5 Tests and bugs found
+
+- Unit: demo config (auto tenant, memory cap, refuses a real upstream or an upstream key, limit
+  validation), stats config, shipped config files parse, limiter bound / idle-first / LRU,
+  embedded assets, path refusal, directory override, content types.
+- Integration (`dashboard_test.cpp`): page headers and types, bad names 404, override dir,
+  `recent` without prompts or tenant ids, stream sends periodic snapshots, stream connections
+  capped and released, demo public key, per-address 429, prompt cap counting code points, reset
+  purges only `demo`, `/demo/*` absent in live mode.
+- Browser (`tools/dashboard_e2e.py`): real binaries + headless Chromium with the CSP on; runs every
+  card, try-it (streamed, then HIT with the same text), reset; compares the page with `/stats` and
+  the mock's call counter; fails on any console error. Passes; it also took
+  `docs/img/dashboard.png`.
+- **Bug found by the browser test:** Playwright's `wait_for_function` needs `eval`, which our CSP
+  blocks. That proves the CSP is enforced; the test uses locator assertions instead.
+- **Flaky tests fixed (pre-existing):** under `ctest -j4` a sequential repeat occasionally came
+  back COALESCED instead of HIT. The response reaches the client before the leader's flight is
+  retired (after the insert is applied, or in the guard's destructor on errors), so an immediate
+  repeat can join the finished flight. Correct behaviour (no extra upstream call), racy test.
+  `TestEnv::chat/request` now wait for the request's session to end and the writer to flush
+  (`settle`). 5/5 full parallel runs clean afterwards.
+- **Limitation found:** Chromium allows 6 connections per host, so the Rush card cannot show a pure
+  herd; documented on the card.
+
+---
+
+## 17. Concurrency model as implemented
 
 **Threads:**
 
@@ -1265,7 +1373,7 @@ readers during HNSW upgrades, concurrent HNSW searches, and the herd stress test
 
 ---
 
-## 17. Failure handling: "fail open"
+## 18. Failure handling: "fail open"
 
 Rule: **if upstream could have served the request, the client gets upstream's answer.**
 
@@ -1298,12 +1406,13 @@ Rule: **if upstream could have served the request, the client gets upstream's an
 
 ---
 
-## 18. Configuration reference
+## 19. Configuration reference
 
 Sections (see `config/semcache.example.toml` for every key with comments):
 
 - top level: `mode` (`live` | `demo`)
-- `[server]`: host, port, io_threads, max_inflight, max_body_bytes, read/write/shutdown timeouts
+- `[server]`: host, port, io_threads, max_inflight, max_body_bytes, read/write/shutdown timeouts,
+  dashboard_dir (unset = embedded files)
 - `[upstream]`: base_url, verify_tls, connect/first_byte/idle/total timeouts, max_response_bytes
 - `[embedder]`: model_path, vocab_path, max_tokens (256), intra_op_threads (1), threads (4), queue_capacity (1024)
 - `[cache]`: enabled, similarity_threshold (0.97), history_k (2), max_temperature (2.0),
@@ -1316,6 +1425,9 @@ Sections (see `config/semcache.example.toml` for every key with comments):
   hnsw_ef_construction (200), hnsw_ef_search (64), hnsw_max_tombstone_ratio (0.25), hnsw_seed (42)
 - `[coalescer]`: enabled (true), max_waiters_per_flight (1000)
 - `[limits]`: rps (50), burst (100) per tenant
+- `[stats]`: stream_interval_ms (1000), max_stream_clients (32), recent_requests (50)
+- `[demo]` (demo mode only): allowed_upstreams, public_key, per_ip_rps (2), per_ip_burst (10),
+  max_prompt_chars (500), max_bytes (64 MiB), max_tracked_ips (10000)
 - `[logging]`: level, log_prompts (false)
 - `[[tenants]]`: id, key_env, optional max_bytes, optional ttl_s
 
@@ -1325,7 +1437,7 @@ by `key_env`.
 
 ---
 
-## 19. Observability: logs, metrics, endpoints
+## 20. Observability: logs, metrics, endpoints
 
 **Log line per request** (JSON): `ts, level, msg="request", req_id, tenant, status, cache,
 streamed, latency_ms, upstream_ms, upstream_error, bytes_in, [similarity], [bypass_reason],
@@ -1351,22 +1463,25 @@ streamed, latency_ms, upstream_ms, upstream_error, bytes_in, [similarity], [bypa
   `semcache_snapshot_seconds`, `semcache_persistence_errors_total`,
   `semcache_persistence_recovery_total{result}`, `semcache_evictions_total{reason="purge"}`
 
-**Endpoints:** `/healthz`, `/readyz`, `/stats`, `/metrics`, `POST /admin/purge` (admin key).
+**Endpoints:** `/healthz`, `/readyz`, `/stats`, `/stats/stream` (SSE), `/metrics`, `/dashboard`,
+`POST /admin/purge` (admin key), `POST /demo/reset` (demo mode only).
 
 ---
 
-## 20. Testing: how we know it works
+## 21. Testing: how we know it works
 
-**221 tests**, run under three builds (debug, ASan+UBSan, TSan).
+**244 tests**, run under three builds (debug, ASan+UBSan, TSan), plus the browser test
+`tools/dashboard_e2e.py`.
 
 **Unit tests (`tests/unit/`):**
 
 | File | Covers |
 |---|---|
-| `config_test.cpp` | defaults, file values, env overrides, secrets only from env, unknown keys rejected, type errors, validation, embedder/cache sections |
+| `config_test.cpp` | defaults, file values, env overrides, secrets only from env, unknown keys rejected, type errors, validation, embedder/cache sections, demo mode rules, stats section, shipped config files parse |
 | `log_test.cpp` | one JSON object per line with `ts/level/msg` first; invalid UTF-8 replaced, not thrown |
 | `metrics_test.cpp` | counters and gauges, same name with two types rejected, histogram buckets and quantiles, Prometheus rendering |
-| `rate_limiter_test.cpp` | burst then refill over time, keys independent (injected clock) |
+| `rate_limiter_test.cpp` | burst then refill over time, keys independent (injected clock), bounded keys, idle buckets dropped first, LRU when all active |
+| `web_assets_test.cpp` | dashboard files embedded, path refusal, directory override, content types |
 | `tenants_test.cpp` | bearer key → tenant; malformed/unknown headers rejected |
 | `mock_response_test.cpp` | mock is deterministic, depends on prompt and model, stream events reassemble to the content, fault-string parsing |
 | `bert_normalizer_test.cpp` | examples + **every code point** vs HuggingFace (272 blocks) |
@@ -1393,6 +1508,7 @@ streamed, latency_ms, upstream_ms, upstream_error, bytes_in, [similarity], [bypa
 | `cache_test.cpp` | MISS then exact HIT without upstream call; paraphrase above/below threshold; configurable threshold; streamed miss served to both modes; tenants isolated; different context misses; bypass header; uncacheable requests; cache disabled; errors and interrupted streams never stored; embedder failure fails open; too-long prompt exact-only; no-embedder mode; full embed queue fails open; `/stats` and metrics |
 | `semantic_model_test.cpp` | the **real model** end to end: rewordings HIT, different questions MISS |
 | `restart_purge_test.cpp` | restart keeps HITs, purge by tag/tenant, purge durable, in-flight guard, admin auth, invalid tags (§14.8) |
+| `dashboard_test.cpp` | `/dashboard` headers and 404s, override dir, `/stats` recent ring without prompts, `/stats/stream` events and connection cap, demo key, per-address 429, prompt cap, `/demo/reset` (§16.5) |
 | `herd_test.cpp` | coalescing under herds (§12.8): 50 → 1 upstream call, live streaming followers, shared errors, cap, isolation, leader hang-up, mixed-traffic stress |
 
 **Test helpers:** `TestEnv` starts mock + proxy on random ports in-process and drains them on
@@ -1407,7 +1523,7 @@ for each).
 
 ---
 
-## 21. Measurements so far
+## 22. Measurements so far
 
 All from reproducible scripts; raw JSON under `bench/results/`. Machine: i7-1165G7 laptop under
 WSL2, which measured well below the CPU's capability (~35 GFLOP/s single-core).
@@ -1454,7 +1570,7 @@ upstream calls; mixed workload −81% upstream calls.
 
 ---
 
-## 22. Known weaknesses and what comes next
+## 23. Known weaknesses and what comes next
 
 **Known weaknesses:**
 - Embedding is slow on this laptop: above the 10 ms HIT budget for longer prompts. Re-measure on
@@ -1477,15 +1593,17 @@ upstream calls; mixed workload −81% upstream calls.
   the retry succeeds could bring back entries purged meanwhile.
 - Streamed misses without `include_usage` store no usage → tokens saved is undercounted.
 - `/stats` percentiles are bucket estimates.
+- Demo per-address limits see the TCP peer: behind a reverse proxy all visitors share one address
+  (forwarded headers are not trusted). An attacker rotating addresses can evict a busy bucket.
+- The dashboard's Rush card is limited by the browser's 6 connections per host (§16.1).
 - CI runs on GitHub for every push (debug, release, ASan, TSan); Phase 6 was not yet pushed when this was written.
 
-**Next phases:**
-8. Dashboard.
+**Next phase:**
 9. Docker, deploy docs, README.
 
 ---
 
-## 23. How to build, run and test
+## 24. How to build, run and test
 
 ```bash
 # one-time setup
@@ -1494,7 +1612,7 @@ scripts/fetch-model.sh               # model + vocab, hash-checked
 
 # build (ALWAYS -j4 on this machine)
 cmake --preset debug && cmake --build build/debug -j4
-ctest --test-dir build/debug         # 221 tests
+ctest --test-dir build/debug         # 244 tests
 
 cmake --preset asan && cmake --build build/asan -j4 && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j4 && ctest --test-dir build/tsan
@@ -1506,6 +1624,8 @@ curl -s -i -H "Authorization: Bearer sk-sc-dev" \
   -d '{"model":"m","messages":[{"role":"user","content":"How do I reset my password?"}]}' \
   localhost:8080/v1/chat/completions          # MISS, then run again: HIT
 curl -s localhost:8080/stats
+# dashboard: open http://127.0.0.1:8080/dashboard (talk track: docs/demo-script.md)
+.venv/bin/python tools/dashboard_e2e.py --bin build/debug   # browser test (needs Playwright + Chromium)
 
 # benchmarks
 cmake --preset release && cmake --build build/release -j4
@@ -1533,7 +1653,7 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 
 ---
 
-## 24. Glossary
+## 25. Glossary
 
 | Term | Meaning |
 |---|---|

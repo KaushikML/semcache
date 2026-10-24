@@ -78,12 +78,17 @@ Source of truth for design: `docs/design.md`. Decisions: `docs/adr/`.
 - Phase 6 (persistence + invalidation): done. Snapshot + WAL (`src/persist/`), recovery with torn-tail
   truncation / corrupt-file set-aside / model fingerprint; tags + `POST /admin/purge` + purge guard.
   Known: one 20K HNSW partition recovers in ~17 s (graph rebuilt from vectors).
-- **Phase 7 (evaluation): implemented, awaiting review.** `bench/results/phase7`. QQP (10K pairs,
+- Phase 7 (evaluation): done. `bench/results/phase7`. QQP (10K pairs,
   downloaded to data/, not committed) + synthetic FAQ (`bench/data/faq_eval.jsonl`), embedded by the
   product embedder (`semcache_embed_texts`). Threshold default now **0.97** (ADR-012: <= 1% false hits on
   QQP non-dups; recall 12.4%). MiniLM catches near-rewordings only; negation fools it. Load
   (`semcache_loadgen` + `tools/run_load_eval.py`): exact HIT 24.5K rps p50 1 ms; semantic/MISS
   embedding-bound (~300 rps); mixed workload -81% upstream calls; herd 50x20: 20 vs 1000 upstream
   calls. HNSW recall@10 on real QQP vectors >= 0.995 at ef=64. Cost model: `tools/cost_model.py`.
-  Deferred: `/stats/stream` + recent-requests ring (Phase 8).
+- **Phase 8 (dashboard): implemented, awaiting review.** `web/` embedded at build time
+  (`cmake/embed_web.cmake`, ADR-010), `/dashboard` with same-origin CSP, `/stats` recent ring (no
+  prompts) + `/stats/stream` (SSE, capped), demo mode safety (allow-listed mock upstream, public
+  `demo` tenant, bounded per-IP limiter, prompt cap, memory cap, `POST /demo/reset`).
+  `docs/demo-script.md`. Browser E2E: `tools/dashboard_e2e.py` (Playwright; Chromium libs unpacked
+  without root, see demo-script). Test harness `TestEnv::settle` fixes a COALESCED-vs-HIT race.
 - Python tooling: `python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt`.
