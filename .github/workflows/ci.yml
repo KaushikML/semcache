@@ -52,3 +52,23 @@ jobs:
 
       - name: Test
         run: ctest --preset ${{ matrix.preset }} --timeout 120
+
+  docker:
+    name: docker image + compose smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image (layer cache in GitHub Actions)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: semcache:local
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Compose smoke test
+        run: SEMCACHE_SMOKE_NO_BUILD=1 scripts/docker-smoke.sh
