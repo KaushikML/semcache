@@ -89,6 +89,15 @@ add_executable(semcache-mock mock/main.cpp)
 target_link_libraries(semcache-mock PRIVATE semcache_mock)
 semcache_set_warnings(semcache-mock)
 
+# Install layout (Phase 9, docs/deploy.md): <prefix>/bin/{semcache,semcache-mock},
+# <prefix>/lib/libonnxruntime.so.1 found via $ORIGIN, so the tree can be copied anywhere.
+include(GNUInstallDirs)
+set_target_properties(semcache semcache-mock PROPERTIES INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+install(TARGETS semcache semcache-mock RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+get_target_property(_ort_lib onnxruntime::onnxruntime IMPORTED_LOCATION)
+install(FILES "${_ort_lib}" DESTINATION ${CMAKE_INSTALL_LIBDIR} RENAME libonnxruntime.so.1)
+install(FILES config/semcache.example.toml DESTINATION ${CMAKE_INSTALL_DATADIR}/semcache)
+
 if(SEMCACHE_BUILD_BENCH)
   find_package(benchmark CONFIG REQUIRED)
   add_executable(semcache_bench_embed bench/embed_bench.cpp)
