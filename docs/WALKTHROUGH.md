@@ -84,8 +84,10 @@ A cached answer may be reused only if **both** hold:
    the same context has cosine ≥ `similarity_threshold` (default 0.97, chosen from measurements in
    Phase 7 — §15), it is a HIT.
 
-There is also a shortcut: if the final message is *literally* the same (after Unicode
-normalization and trimming), it is an **exact HIT** and the neural network is not even run.
+There is also a shortcut: if the final message is the same apart from letter case, spacing and
+the final `.`, `?` or `!` ("tell me the privacy policy" = "Tell me the privacy policy."), it is an
+**exact HIT** and the neural network is not even run (ADR-013). Any other difference, even one
+word, goes to the model.
 
 Example measured with the real model:
 
@@ -277,7 +279,7 @@ cache can only ever remove work, never break a request.
 | `embed_bench.cpp` | Google Benchmark: tokenizer speed, single embeds at 16–256 tokens, batching, 1–8 concurrent threads. |
 | `index_bench.cpp` | Google Benchmark: dot product scalar vs AVX2; brute-force search at 1K–100K vectors. |
 | `embed_texts.cpp` | Embeds a JSONL file with the product's `OnnxEmbedder` (multi-threaded) → float32 file. |
-| `loadgen.cpp` | Closed-loop HTTP load generator: modes cycle / case / once / herd / mix; latency per `X-Semcache` result. |
+| `loadgen.cpp` | Closed-loop HTTP load generator: modes cycle / variant (accented vowel: same embedding, new exact key) / once / herd / mix; latency per `X-Semcache` result. |
 | `data/faq_eval.jsonl` | The committed FAQ evaluation set. |
 | `persist_eval.cpp` | WAL replay, snapshot write and snapshot load times and sizes for N entries. |
 | `hnsw_eval.cpp` | Brute force vs HNSW per partition size: recall@10, p50/p99 latency for several `ef`, build time, memory. |
@@ -731,8 +733,11 @@ its bytes, so `("ab","c")` and `("a","bc")` differ:
 (`1` and `1.0` encode the same). A missing parameter is simply absent — different from an explicit
 default value.
 
-**Embed text / prompt hash:** the final user message text, Unicode NFC-normalized and trimmed;
-the prompt hash is its SHA-256 (used for the exact fast path).
+**Embed text / prompt hash:** the embed text is the final user message, Unicode NFC-normalized and
+trimmed. The prompt hash (the exact fast path's key) is the SHA-256 of a folded copy: case-folded,
+whitespace collapsed, a sentence-final run of `.?!` dropped after a letter (ADR-013, added after
+Phase 9 from user feedback). Internal punctuation, accents and every word stay significant, so
+"version 1.2" ≠ "version 12" and "C++" ≠ "C".
 
 ### 11.2 SIMD dot product (`src/index/simd.cpp`)
 
@@ -1766,7 +1771,7 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 | **Cosine similarity** | How aligned two vectors are (1 = same direction). For unit-length vectors it equals the dot product. |
 | **Context key** | SHA-256 of everything except the final question; must match exactly. |
 | **Partition** | All cache entries with the same context key. |
-| **Exact fast path** | Same normalized final question → HIT without running the model. |
+| **Exact fast path** | Same final question up to case, spacing and final punctuation → HIT without running the model. |
 | **HIT / MISS / BYPASS / COALESCED** | How a request was served (see §1). |
 | **SSE** | Server-Sent Events: `data: …\n\n` lines streamed over HTTP; how LLM APIs stream tokens. |
 | **Chunked encoding** | HTTP/1.1 way to send a body of unknown length piece by piece. |

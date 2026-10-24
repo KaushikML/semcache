@@ -16,7 +16,8 @@ through untouched.
 - **Only safe reuse:** a cached answer is considered only if *everything except the last user
   message* matches exactly: tenant, model, every generation parameter, tools, system prompt and
   the last K turns, hashed into a context key. Within that context, the last message is compared
-  by meaning (all-MiniLM-L6-v2 embeddings, cosine ≥ 0.97), and verbatim repeats skip the model.
+  by meaning (all-MiniLM-L6-v2 embeddings, cosine ≥ 0.97), and repeats that differ only in case,
+  spacing or final punctuation skip the model.
 - **Coalescing:** N identical requests in flight → one upstream call; the others get the same
   answer, streamed live.
 - **Fails open:** if any part of the cache layer fails (embedder, index, queue full, disk), the

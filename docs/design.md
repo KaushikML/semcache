@@ -26,7 +26,7 @@ semcache is a drop-in proxy (change only `base_url`). It returns a cached answer
 | F1 | Expose OpenAI-compatible `POST /v1/chat/completions`, with both non-streaming and `stream=true` (SSE). |
 | F2 | Authenticate clients with proxy-issued keys (`Authorization: Bearer sk-sc-…`) and map each key to a tenant ([ADR-001](adr/001-proxy-issued-tenant-keys.md)). |
 | F3 | Compute a **context key** = SHA-256 over a canonical encoding of tenant, model, sampling params, tools, system messages and the last K prior messages ([ADR-002](adr/002-context-key-composition.md)). Only entries with an equal context key are candidates. |
-| F4 | Exact-prompt fast path: if `(context key, sha256(normalized last user message))` is cached, it is a HIT with similarity 1.0 and no embedding is computed. |
+| F4 | Exact-prompt fast path: if `(context key, sha256(normalized last user message))` is cached, it is a HIT with similarity 1.0 and no embedding is computed. Normalized = NFC, case-folded, whitespace collapsed, sentence-final `.?!` dropped ([ADR-013](adr/013-exact-key-folds-case-and-final-punctuation.md)). |
 | F5 | Otherwise embed the last user message in-process (all-MiniLM-L6-v2, 384-d, L2-normalized) and search the context partition for the nearest neighbour. |
 | F6 | If cosine ≥ `cache.similarity_threshold`, return the cached response. Re-stream it as SSE when `stream=true`. |
 | F7 | On a miss, forward to upstream, stream or return the response to the client, and store it if it is cacheable (§6.4). |
@@ -630,3 +630,4 @@ ttl_s = 86400
 | [010](adr/010-embedded-dashboard.md) | Dashboard as static files embedded in the binary |
 | [011](adr/011-pinned-upstream-onnx-model.md) | Published ONNX export pinned by revision + SHA-256 |
 | [012](adr/012-similarity-threshold-from-false-hits.md) | Default threshold 0.97 from a 1% false-hit budget on QQP |
+| [013](adr/013-exact-key-folds-case-and-final-punctuation.md) | Exact key folds case, spacing and sentence-final punctuation |
