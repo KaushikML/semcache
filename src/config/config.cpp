@@ -306,6 +306,29 @@ void finalize_config(Config& cfg) {
     throw ConfigError("limits.rps must be > 0 and limits.burst >= 1");
   }
 
+  if (cfg.stats.stream_interval.count() <= 0 || cfg.stats.max_stream_clients == 0 || cfg.stats.recent_requests == 0) {
+    throw ConfigError("stats.* values must be > 0");
+  }
+
+  if (cfg.mode == Mode::demo) {
+    // A public demo must never reach a paid upstream, whatever the rest of the config says.
+    const auto target = u.host + ":" + std::to_string(u.port);
+    const auto& allowed = cfg.demo.allowed_upstreams;
+    if (std::find(allowed.begin(), allowed.end(), target) == allowed.end()) {
+      throw ConfigError("demo mode: upstream " + target + " is not in demo.allowed_upstreams");
+    }
+    if (!u.api_key.empty()) throw ConfigError("demo mode: SEMCACHE_UPSTREAM_API_KEY must not be set");
+    if (cfg.demo.public_key.empty()) throw ConfigError("demo.public_key must be set in demo mode");
+    if (cfg.demo.per_ip_rps <= 0 || cfg.demo.per_ip_burst < 1 || cfg.demo.max_prompt_chars == 0 ||
+        cfg.demo.max_bytes == 0 || cfg.demo.max_tracked_ips == 0) {
+      throw ConfigError("demo.* limits must be > 0");
+    }
+    cfg.cache.max_bytes = std::min(cfg.cache.max_bytes, cfg.demo.max_bytes);
+    const bool have_demo_tenant = std::any_of(cfg.tenants.begin(), cfg.tenants.end(),
+                                              [](const TenantConfig& t) { return t.id == "demo"; });
+    if (!have_demo_tenant) cfg.tenants.push_back({"demo", "", sha256(cfg.demo.public_key), std::nullopt, std::nullopt});
+  }
+
   if (cfg.tenants.empty()) throw ConfigError("at least one [[tenants]] entry is required");
   std::set<std::string> ids;
   std::set<Sha256Digest> keys;
@@ -347,6 +370,20 @@ Config load_config_from_string(std::string_view toml_text, const EnvLookup& env)
   r.read("server", "read_timeout_ms", s.read_timeout);
   r.read("server", "write_timeout_ms", s.write_timeout);
   r.read("server", "shutdown_timeout_ms", s.shutdown_timeout);
+  r.read("server", "dashboard_dir", s.dashboard_dir);
+
+  r.read("stats", "stream_interval_ms", cfg.stats.stream_interval);
+  r.read("stats", "max_stream_clients", cfg.stats.max_stream_clients);
+  r.read("stats", "recent_requests", cfg.stats.recent_requests);
+
+  auto& d = cfg.demo;
+  r.read("demo", "allowed_upstreams", d.allowed_upstreams);
+  r.read("demo", "public_key", d.public_key);
+  r.read("demo", "per_ip_rps", d.per_ip_rps);
+  r.read("demo", "per_ip_burst", d.per_ip_burst);
+  r.read("demo", "max_prompt_chars", d.max_prompt_chars);
+  r.read("demo", "max_bytes", d.max_bytes);
+  r.read("demo", "max_tracked_ips", d.max_tracked_ips);
 
   auto& u = cfg.upstream;
   r.read("upstream", "base_url", u.base_url);

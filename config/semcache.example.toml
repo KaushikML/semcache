@@ -17,6 +17,7 @@ max_body_bytes = 1048576           # request body cap => 413
 read_timeout_ms = 10000            # full request read; also keep-alive idle timeout
 write_timeout_ms = 30000           # per write to the client
 shutdown_timeout_ms = 5000         # drain budget on SIGTERM
+# dashboard_dir = "web"            # serve /dashboard files from disk (development); default: embedded
 
 [upstream]
 base_url = "https://api.openai.com"
@@ -76,6 +77,20 @@ max_waiters_per_flight = 1000      # beyond this, duplicates are served independ
 [limits]
 rps = 50                           # per-tenant token bucket
 burst = 100
+
+[stats]
+stream_interval_ms = 1000          # /stats/stream push interval
+max_stream_clients = 32            # concurrent /stats/stream connections; beyond => 503
+recent_requests = 50               # recent-requests ring in /stats (never prompt text)
+
+[demo]                             # used only when mode = "demo"
+allowed_upstreams = ["mock:9090", "127.0.0.1:9090", "localhost:9090"]   # anything else => refuse to start
+public_key = "sk-sc-demo-public"   # public by design: tenant "demo", shown in /stats for the dashboard
+per_ip_rps = 2                     # per client address, chat + /demo/reset
+per_ip_burst = 10
+max_prompt_chars = 500             # code points of the last message => 400 prompt_too_long
+max_bytes = 67108864               # caps cache.max_bytes
+max_tracked_ips = 10000            # memory bound of the per-address limiter
 
 [logging]
 level = "info"                     # trace|debug|info|warn|error

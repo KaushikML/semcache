@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <fstream>
 #include <map>
+#include <sstream>
 
 #include "config/config.hpp"
 
@@ -63,7 +65,8 @@ key_env = "KEY_ACME"
 }
 
 TEST(Config, EnvOverridesFile) {
-  auto cfg = load_config_from_string(std::string("[server]\nport = 9000\n") + std::string(kMinimal),
+  auto cfg = load_config_from_string(std::string("[server]\nport = 9000\n[upstream]\nbase_url = \"http://127.0.0.1:9090\"\n") +
+                                         std::string(kMinimal),
                                      fake_env({{"KEY_ACME", "k"},
                                                {"SEMCACHE_SERVER__PORT", "9999"},
                                                {"SEMCACHE_MODE", "demo"},
@@ -73,6 +76,72 @@ TEST(Config, EnvOverridesFile) {
   EXPECT_EQ(cfg.mode, Mode::demo);
   EXPECT_TRUE(cfg.logging.log_prompts);
   EXPECT_DOUBLE_EQ(cfg.limits.rps, 7.5);
+}
+
+constexpr std::string_view kDemoUpstream = "mode = \"demo\"\n[upstream]\nbase_url = \"http://127.0.0.1:9090\"\n";
+
+TEST(Config, DemoModeAddsThePublicDemoTenantAndCapsMemory) {
+  auto cfg = load_config_from_string(std::string(kDemoUpstream) + "[cache]\nmax_bytes = 999999999999\n" +
+                                         "[demo]\npublic_key = \"sk-sc-pub\"\nmax_bytes = 1000000\n" +
+                                         std::string(kMinimal),
+                                     fake_env({{"KEY_ACME", "k"}}));
+  ASSERT_EQ(cfg.tenants.size(), 2u);
+  EXPECT_EQ(cfg.tenants[1].id, "demo");
+  EXPECT_EQ(cfg.tenants[1].key_sha256, sha256("sk-sc-pub"));
+  EXPECT_EQ(cfg.cache.max_bytes, 1000000u);
+}
+
+TEST(Config, DemoModeRefusesARealUpstream) {
+  const auto env = fake_env({{"KEY_ACME", "k"}});
+  try {
+    (void)load_config_from_string(std::string("mode = \"demo\"\n[upstream]\nbase_url = \"https://api.openai.com\"\n") +
+                                      std::string(kMinimal),
+                                  env);
+    FAIL() << "expected ConfigError";
+  } catch (const ConfigError& e) {
+    EXPECT_NE(std::string(e.what()).find("allowed_upstreams"), std::string::npos) << e.what();
+  }
+  // Allow-listing it explicitly works only without an upstream key.
+  const auto custom = std::string("mode = \"demo\"\n[upstream]\nbase_url = \"http://mockhost:7000\"\n") +
+                      "[demo]\nallowed_upstreams = [\"mockhost:7000\"]\n" + std::string(kMinimal);
+  EXPECT_NO_THROW((void)load_config_from_string(custom, env));
+  EXPECT_THROW((void)load_config_from_string(custom, fake_env({{"KEY_ACME", "k"}, {"SEMCACHE_UPSTREAM_API_KEY", "sk-real"}})),
+               ConfigError);
+}
+
+TEST(Config, DemoModeValidatesItsLimits) {
+  const auto env = fake_env({{"KEY_ACME", "k"}});
+  for (const char* bad : {"public_key = \"\"", "per_ip_rps = 0", "per_ip_burst = 0", "max_prompt_chars = 0",
+                          "max_tracked_ips = 0"}) {
+    EXPECT_THROW((void)load_config_from_string(std::string(kDemoUpstream) + "[demo]\n" + bad + "\n" + std::string(kMinimal), env),
+                 ConfigError)
+        << bad;
+  }
+  // The same values are ignored in live mode, which has no demo tenant.
+  auto live = load_config_from_string(std::string("[demo]\npublic_key = \"\"\n") + std::string(kMinimal), env);
+  EXPECT_EQ(live.tenants.size(), 1u);
+}
+
+TEST(Config, StatsValuesAreValidated) {
+  const auto env = fake_env({{"KEY_ACME", "k"}});
+  auto cfg = load_config_from_string(std::string("[stats]\nstream_interval_ms = 250\nrecent_requests = 7\n") + std::string(kMinimal), env);
+  EXPECT_EQ(cfg.stats.stream_interval, Millis(250));
+  EXPECT_EQ(cfg.stats.recent_requests, 7u);
+  EXPECT_THROW((void)load_config_from_string(std::string("[stats]\nmax_stream_clients = 0\n") + std::string(kMinimal), env),
+               ConfigError);
+}
+
+TEST(Config, ShippedConfigFilesAreValid) {
+  // SEMCACHE_MODEL_DIR is <repo>/models.
+  const std::string repo = std::string(SEMCACHE_MODEL_DIR) + "/..";
+  for (const char* name : {"semcache.example.toml", "dev.toml"}) {
+    std::ifstream in(repo + "/config/" + name);
+    ASSERT_TRUE(in) << name;
+    std::stringstream ss;
+    ss << in.rdbuf();
+    EXPECT_NO_THROW((void)load_config_from_string(ss.str(), fake_env({{"SEMCACHE_KEY_ACME", "a"}, {"SEMCACHE_KEY_DEV", "d"}})))
+        << name;
+  }
 }
 
 TEST(Config, UpstreamKeyComesOnlyFromEnv) {

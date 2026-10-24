@@ -31,6 +31,24 @@ struct ServerConfig {
   Millis read_timeout{10'000};           // whole request (headers + body), also keep-alive idle
   Millis write_timeout{30'000};          // per write to the client
   Millis shutdown_timeout{5'000};        // max wait for in-flight sessions to drain on SIGTERM
+  std::string dashboard_dir;  // development: serve /dashboard files from disk; empty = embedded copy
+};
+
+struct StatsConfig {
+  Millis stream_interval{1'000};       // /stats/stream event period
+  std::size_t max_stream_clients = 32;  // concurrent /stats/stream connections; more => 503
+  std::size_t recent_requests = 50;     // ring shown by /stats (never contains prompt text)
+};
+
+// Public demo (design §10): only the mock upstream, a public tenant key, per-IP limits.
+struct DemoConfig {
+  std::vector<std::string> allowed_upstreams = {"mock:9090", "127.0.0.1:9090", "localhost:9090"};
+  std::string public_key = "sk-sc-demo-public";  // public by design; exists only in demo mode
+  double per_ip_rps = 2;
+  double per_ip_burst = 10;
+  std::size_t max_prompt_chars = 500;
+  std::size_t max_bytes = 64 << 20;  // cache budget in demo mode (caps cache.max_bytes)
+  std::size_t max_tracked_ips = 10'000;  // per-IP buckets kept; idle ones are evicted first
 };
 
 struct UpstreamConfig {
@@ -142,6 +160,8 @@ struct Config {
   CoalescerConfig coalescer;
   IndexConfig index;
   PersistenceConfig persistence;
+  StatsConfig stats;
+  DemoConfig demo;
   Secret admin_key;  // SEMCACHE_ADMIN_KEY only; empty => /admin/* disabled
   LimitsConfig limits;
   LoggingConfig logging;
