@@ -10,8 +10,9 @@ ARG BASE=ubuntu:24.04
 # ---------- build ----------
 FROM ${BASE} AS build
 ENV DEBIAN_FRONTEND=noninteractive
+# perl: OpenSSL's build; python3: vcpkg's meson tool. Build stage only, never in the runtime image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential cmake ninja-build git curl ca-certificates zip unzip tar pkg-config perl \
+        build-essential cmake ninja-build git curl ca-certificates zip unzip tar pkg-config perl python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # The dev box has ~8 GB RAM: never more than 4 compile jobs (CLAUDE.md). Same limit here.
@@ -34,7 +35,9 @@ COPY scripts/fetch-model.sh scripts/
 RUN scripts/fetch-model.sh /opt/semcache/models
 
 COPY . .
-RUN cmake --preset release -DSEMCACHE_BUILD_TESTS=OFF -DSEMCACHE_BUILD_BENCH=OFF \
+# The toolchain file reruns vcpkg (a no-op here); it needs the binary cache directory to exist.
+RUN --mount=type=cache,target=/root/.cache/vcpkg-binary \
+    cmake --preset release -DSEMCACHE_BUILD_TESTS=OFF -DSEMCACHE_BUILD_BENCH=OFF \
           -DCMAKE_INSTALL_PREFIX=/opt/semcache \
     && cmake --build build/release -j${JOBS} \
     && cmake --install build/release --strip
