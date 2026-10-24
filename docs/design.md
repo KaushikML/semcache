@@ -440,8 +440,12 @@ only ever removes work.
   **200**: the node serves every request by passthrough, so taking it out of rotation would turn a
   cache problem into an outage (fail open). Alert on `semcache_embedder_ready == 0` instead.
 - **`/stats`:** JSON snapshot for the dashboard: totals, hit rate, latency summaries, index size,
-  in-flight, a histogram, and a recent-requests ring **without prompt text**. **`/stats/stream`:**
-  the same as SSE every `stats.stream_interval_ms`.
+  in-flight, mode, uptime and a recent-requests ring (`stats.recent_requests`: time, result,
+  status, latency, similarity) **without prompt text or tenant ids**. **`/stats/stream`:** the
+  same as SSE every `stats.stream_interval_ms`, at most `stats.max_stream_clients` connections
+  (beyond: 503 + Retry-After). A client that leaves is noticed at the next write.
+- **`/dashboard`:** static HTML/CSS/JS compiled into the binary ([ADR-010](adr/010-embedded-dashboard.md)),
+  served with a same-origin-only CSP. `server.dashboard_dir` serves the files from disk instead.
 
 ## 10. Security
 
@@ -454,7 +458,12 @@ only ever removes work.
 - **Admin:** `/admin/*` requires `SEMCACHE_ADMIN_KEY`. When unset, the endpoints are disabled.
 - **Demo mode:** refuses to start unless upstream is the mock (no upstream key set, upstream host
   is in `demo.allowed_upstreams`). The demo tenant key is public by design and only exists in demo
-  mode. The dashboard shows prompt text only from its own browser session (held client-side).
+  mode. Per-address token bucket (`demo.per_ip_*`, bounded to `demo.max_tracked_ips` addresses:
+  idle buckets are dropped first, then the least recently used) on chat and `POST /demo/reset`;
+  prompt length cap; cache memory capped at `demo.max_bytes`. `POST /demo/reset` purges tenant
+  `demo` only. The dashboard shows prompt text only from its own browser session (held client-side).
+  Known limit: behind a reverse proxy every client shares one address (no `X-Forwarded-For`
+  trust is implemented), and eviction under address churn resets a bucket.
   `/stats` never returns prompts.
 - **Logs:** redaction by default (§9). Request bodies are never logged on error paths unless
   `log_prompts` is on.
@@ -557,12 +566,19 @@ log_prompts = false
 usd_per_1k_input_tokens = 0.0
 usd_per_1k_output_tokens = 0.0
 
+[stats]
+stream_interval_ms = 1000     # /stats/stream push interval
+max_stream_clients = 32       # concurrent /stats/stream connections; beyond => 503
+recent_requests = 50          # recent-requests ring in /stats (no prompt text)
+
 [demo]
-allowed_upstreams = ["mock:9090", "127.0.0.1:9090"]
+allowed_upstreams = ["mock:9090", "127.0.0.1:9090", "localhost:9090"]
+public_key = "sk-sc-demo-public"  # tenant "demo" is added for it; published in /stats
 per_ip_rps = 2
 per_ip_burst = 10
-max_prompt_chars = 500
-max_bytes = 67108864
+max_prompt_chars = 500        # Unicode code points of the last message => 400 prompt_too_long
+max_bytes = 67108864          # caps cache.max_bytes in demo mode
+max_tracked_ips = 10000       # per-IP limiter memory bound
 
 [[tenants]]
 id = "acme"
