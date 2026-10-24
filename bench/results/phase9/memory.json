@@ -1,0 +1,28 @@
+{
+  "entries_requested": 10000,
+  "response_words": 300,
+  "machine": {
+    "cpu": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+    "nproc": 6,
+    "kernel": "6.18.54.1-microsoft-standard-WSL2"
+  },
+  "idle": {
+    "ready_s": 0.4,
+    "VmHWM": 166.9,
+    "VmRSS": 166.9
+  },
+  "filled": {
+    "fill_s": 50.3,
+    "entries": 10000,
+    "cache_bytes_mib": 40.8,
+    "VmHWM": 250.1,
+    "VmRSS": 247.2
+  },
+  "restarted": {
+    "ready_s": 7.87,
+    "entries": 10000,
+    "disk_mib": 38.6,
+    "VmHWM": 221.8,
+    "VmRSS": 221.8
+  }
+}
