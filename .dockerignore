@@ -1,0 +1,18 @@
+# Only what the image build needs; dependencies, model and ORT are fetched (pinned) inside it.
+.git
+.github
+.claude
+.venv
+.cache
+build
+build*/
+external
+vcpkg_installed
+data
+models
+docs
+bench/results
+**/__pycache__
+PROMPT.md
+Dockerfile
+docker-compose.yml

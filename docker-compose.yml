@@ -1,0 +1,40 @@
+# Demo stack: semcache (demo mode) + the mock LLM. Nothing here can reach a paid API.
+#   docker compose up --build     then open http://127.0.0.1:8080/dashboard
+# Live deployment: docs/deploy.md.
+name: semcache
+
+services:
+  mock:
+    build: .
+    image: semcache:local
+    entrypoint: ["/opt/semcache/bin/semcache-mock"]
+    command: ["--host", "0.0.0.0", "--port", "9090", "--latency-ms", "800"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9090 && printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && head -n1 <&3 | grep -q ' 200 '"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  semcache:
+    build: .                      # same image as mock; the second build is a cache hit
+    image: semcache:local
+    command: ["--config", "/etc/semcache/demo.toml"]
+    depends_on:
+      mock:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"     # loopback only; see docs/deploy.md before exposing it
+    volumes:
+      - semcache-data:/var/lib/semcache/data
+    environment:
+      SEMCACHE_LOGGING__LEVEL: info
+    stop_grace_period: 15s        # > server.shutdown_timeout_ms (5 s): SIGTERM drains first
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  semcache-data:
